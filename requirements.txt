@@ -1,0 +1,7 @@
+langchain
+PyPDF2 
+pdfplumber
+langchian-groq
+sentence-transformer
+
+

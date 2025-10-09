@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume Analysis Results</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/framer-motion@10.12.16/dist/framer-motion.js"></script>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-blue-100 min-h-screen flex items-center justify-center p-4">
+    <div id="container" class="bg-white rounded-xl shadow-2xl p-8 max-w-4xl w-full">
+        <h1 class="text-4xl font-bold mb-6 text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-blue-400">Resume Analysis Results</h1>
+        <div id="result" class="bg-gray-50 rounded-lg p-6 border border-gray-200 overflow-auto max-h-[60vh]">
+            <pre class="text-sm text-gray-700 whitespace-pre-wrap">{{ resume_analysis }}</pre>
+        </div>
+        <div class="mt-8 flex justify-between">
+            <a href="/" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-opacity-50">
+                Go Back
+            </a>
+            <a href="/ask" class="bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-600 focus:ring-opacity-50">
+                Ask a Question
+            </a>
+        </div>
+    </div>
+
+    <script>
+        const { motion } = window.Motion;
+
+        const container = document.getElementById('container');
+        const result = document.getElementById('result');
+        const links = document.querySelectorAll('a');
+
+        motion(container, {
+            initial: { opacity: 0, y: 50 },
+            animate: { opacity: 1, y: 0 },
+            transition: { duration: 0.5, ease: "easeOut" }
+        });
+
+        motion(result, {
+            initial: { opacity: 0, scale: 0.95 },
+            animate: { opacity: 1, scale: 1 },
+            transition: { duration: 0.5, delay: 0.2, ease: "easeOut" }
+        });
+
+        links.forEach(link => {
+            motion(link, {
+                whileHover: { scale: 1.05 },
+                whileTap: { scale: 0.95 },
+                transition: { duration: 0.2 }
+            });
+        });
+    </script>
+</body>
+</html>
+

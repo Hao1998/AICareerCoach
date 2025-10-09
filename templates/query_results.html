@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Query Results</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/framer-motion@10.12.16/dist/framer-motion.js"></script>
+</head>
+<body class="bg-gradient-to-br from-blue-100 to-blue-300 min-h-screen flex items-center justify-center p-4">
+    <div id="container" class="bg-white rounded-xl shadow-2xl p-8 max-w-2xl w-full">
+        <h1 class="text-4xl font-bold mb-6 text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-blue-400">Query Results</h1>
+        <div class="space-y-6">
+            <div id="query" class="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                <h2 class="text-lg font-semibold text-blue-700 mb-2">Query:</h2>
+                <p class="text-blue-800">{{ query }}</p>
+            </div>
+            <div id="answer" class="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                <h2 class="text-lg font-semibold text-blue-700 mb-2">Answer:</h2>
+                <p class="text-blue-800">{{ answer }}</p>
+            </div>
+        </div>
+        <div class="mt-8 flex justify-center">
+            <a href="/query_db" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-opacity-50">
+                Ask another question
+            </a>
+        </div>
+    </div>
+
+    <script>
+        const { motion } = window.Motion;
+
+        const container = document.getElementById('container');
+        const query = document.getElementById('query');
+        const answer = document.getElementById('answer');
+        const link = document.querySelector('a');
+
+        motion(container, {
+            initial: { opacity: 0, y: 50 },
+            animate: { opacity: 1, y: 0 },
+            transition: { duration: 0.5, ease: "easeOut" }
+        });
+
+        motion(query, {
+            initial: { opacity: 0, x: -50 },
+            animate: { opacity: 1, x: 0 },
+            transition: { duration: 0.5, delay: 0.2, ease: "easeOut" }
+        });
+
+        motion(answer, {
+            initial: { opacity: 0, x: 50 },
+            animate: { opacity: 1, x: 0 },
+            transition: { duration: 0.5, delay: 0.4, ease: "easeOut" }
+        });
+
+        motion(link, {
+            whileHover: { scale: 1.05 },
+            whileTap: { scale: 0.95 },
+            transition: { duration: 0.2 }
+        });
+    </script>
+</body>
+</html>
+
