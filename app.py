@@ -4,12 +4,11 @@ from werkzeug.utils import secure_filename
 import PyPDF2
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-# from langchain_openai  import ChatOpenAI
-from langchain.chat_models import ChatOpenAI
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-# from langchain_community.document_loaders import PyPDFLoader
+from langchain_openai import ChatOpenAI  # Updated import
+from langchain_community.embeddings import HuggingFaceEmbeddings  # Fixed import path
+from langchain_community.vectorstores import FAISS  # Updated import
 from langchain.chains import RetrievalQA
+from langchain.text_splitter import CharacterTextSplitter
 
 from langchain.text_splitter import CharacterTextSplitter
 from models import db, JobPosting, JobMatch
@@ -68,11 +67,10 @@ def extract_text_from_pdf(pdf_path):
 
 
 llm = ChatOpenAI(
-    model="gpt-4o",
+    model="grok-4",  # specify the model you want to use
     temperature=0,
-
-    api_key="KEY",  # if you prefer to pass api key in directly instaed of using env vars
-
+    api_key="xai-ZvSilMz38AsuOcnUnU3THsOqpdveUHIUpMxcCNoQHtdQ2GASE5p7WPyUg88kArSCCvMnCYTU2l48tU3G",  # if you prefer to pass api key in directly instaed of using env vars
+    base_url="https://api.x.ai/v1",
 )
 
 resume_summary_template = """
