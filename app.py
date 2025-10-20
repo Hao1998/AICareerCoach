@@ -69,7 +69,6 @@ def extract_text_from_pdf(pdf_path):
 llm = ChatOpenAI(
     model="grok-4",  # specify the model you want to use
     temperature=0,
-    api_key="sadasd",  # if you prefer to pass api key in directly instaed of using env vars
     base_url="https://api.x.ai/v1",
 )
 
