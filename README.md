@@ -7,7 +7,7 @@ An intelligent AI-powered career coaching platform that analyzes resumes and mat
 ### 1. Resume Analysis
 - Upload PDF resumes for comprehensive AI analysis
 - Extracts career objectives, skills, experience, education, and achievements
-- Uses GPT-4o for intelligent resume evaluation
+- Uses Grok for intelligent resume evaluation
 - Provides actionable insights and recommendations
 
 ### 2. CV-Job Matching (NEW!)
@@ -32,7 +32,7 @@ An intelligent AI-powered career coaching platform that analyzes resumes and mat
 
 - **Backend**: Flask (Python)
 - **AI/ML**:
-  - OpenAI GPT-4o for analysis and recommendations
+  - Grok for analysis and recommendations
   - LangChain for prompt management
   - HuggingFace Embeddings for vector representations
   - FAISS for similarity search
@@ -53,11 +53,11 @@ cd AICareerCoach
 pip install -r requirements.txt
 ```
 
-3. Set up your OpenAI API key:
+3. Set up your Grok API key:
    - Edit `app.py` and replace the API key on line 57
    - Or set it as an environment variable:
 ```bash
-export OPENAI_API_KEY='your-api-key-here'
+export XAI_API_KEY='your-api-key-here'
 ```
 
 4. Run the application:
@@ -82,7 +82,7 @@ When you upload a resume:
 - Text is extracted from the PDF
 - Content is split into chunks for efficient processing
 - Embeddings are generated using HuggingFace models
-- Resume is analyzed by GPT-4o for comprehensive evaluation
+- Resume is analyzed by Grok for comprehensive evaluation
 
 ### 2. Job Matching Algorithm
 The matching process involves:
@@ -93,7 +93,7 @@ The matching process involves:
 - Higher similarity indicates better semantic match
 
 **Step 2: AI Analysis**
-- GPT-4o analyzes the resume against each job posting
+- Grok analyzes the resume against each job posting
 - Identifies specific matching skills
 - Highlights skill gaps and areas for improvement
 - Generates a detailed match score (0-100%)
