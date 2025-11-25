@@ -2,6 +2,10 @@ from flask import Flask, request, render_template, redirect, url_for, jsonify
 import os
 from werkzeug.utils import secure_filename
 import PyPDF2
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain_xai import ChatXAI
