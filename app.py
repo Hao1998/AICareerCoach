@@ -4,8 +4,7 @@ from werkzeug.utils import secure_filename
 import PyPDF2
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-# from langchain_openai  import ChatOpenAI
-from langchain.chat_models import ChatOpenAI
+from langchain_xai import ChatXAI
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS
 # from langchain_community.document_loaders import PyPDFLoader
@@ -67,12 +66,10 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 
-llm = ChatOpenAI(
-    model="gpt-4o",
+llm = ChatXAI(
+    model="grok-beta",
     temperature=0,
-
-    api_key="KEY",  # if you prefer to pass api key in directly instaed of using env vars
-
+    api_key=os.getenv('XAI_API_KEY', 'YOUR_XAI_API_KEY_HERE'),  # Set XAI_API_KEY env var or replace here
 )
 
 resume_summary_template = """
