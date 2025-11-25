@@ -70,8 +70,7 @@ def extract_text_from_pdf(pdf_path):
 llm = ChatXAI(
     model="grok-beta",
     temperature=0,
-    base_url="https://api.x.ai/v1",
-    api_key=os.getenv('XAI_API_KEY', 'YOUR_XAI_API_KEY_HERE')  # Set XAI_API_KEY env var or replace here
+    base_url="https://api.x.ai/v1"
 )
 
 resume_summary_template = """
