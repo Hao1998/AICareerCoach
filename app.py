@@ -4,9 +4,10 @@ from werkzeug.utils import secure_filename
 import PyPDF2
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-from langchain_openai import ChatOpenAI  # Updated import
-from langchain_community.embeddings import HuggingFaceEmbeddings  # Fixed import path
-from langchain_community.vectorstores import FAISS  # Updated import
+from langchain_xai import ChatXAI
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import FAISS
+# from langchain_community.document_loaders import PyPDFLoader
 from langchain.chains import RetrievalQA
 from langchain.text_splitter import CharacterTextSplitter
 
@@ -66,10 +67,11 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 
-llm = ChatOpenAI(
-    model="grok-4",  # specify the model you want to use
+llm = ChatXAI(
+    model="grok-beta",
     temperature=0,
     base_url="https://api.x.ai/v1",
+    api_key=os.getenv('XAI_API_KEY', 'YOUR_XAI_API_KEY_HERE')  # Set XAI_API_KEY env var or replace here
 )
 
 resume_summary_template = """
