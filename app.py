@@ -66,11 +66,16 @@ def extract_text_from_pdf(pdf_path):
             text += reader.pages[page_num].extract_text()
     return text
 
+xai_api_key = os.getenv("XAI_API_KEY")
+if not xai_api_key:
+    raise RuntimeError("XAI_API_KEY environment variable is not set")
+
 
 llm = ChatXAI(
     model="grok-beta",
     temperature=0,
-    base_url="https://api.x.ai/v1"
+    base_url="https://api.x.ai/v1",
+    api_key=os.getenv('XAI_API_KEY',xai_api_key)  # Set XAI_API_KEY env var or replace here
 )
 
 resume_summary_template = """
