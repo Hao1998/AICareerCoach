@@ -72,9 +72,8 @@ if not xai_api_key:
 
 
 llm = ChatXAI(
-    model="grok-beta",
+    model="grok-3",
     temperature=0,
-    base_url="https://api.x.ai/v1",
     api_key=os.getenv('XAI_API_KEY',xai_api_key)  # Set XAI_API_KEY env var or replace here
 )
 
@@ -326,4 +325,4 @@ def get_matches_api(filename):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5001)
