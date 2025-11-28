@@ -274,6 +274,17 @@ def list_jobs():
     jobs = JobPosting.query.filter_by(is_active=True).order_by(JobPosting.posted_date.desc()).all()
     return render_template('jobs.html', jobs=jobs)
 
+@app.route('/check-resume-status', methods=['GET'])
+def check_resume_status():
+    """Check if user has already uploaded a resume (vector index exists)"""
+    try:
+        if os.path.exists("vector_index"):
+            return jsonify({"hasResume": True})
+        else:
+            return jsonify({"hasResume": False})
+    except Exception as e:
+        return jsonify({"hasResume": False, "error": str(e)})
+
 
 @app.route('/jobs/add', methods=['GET', 'POST'])
 def add_job():
@@ -299,6 +310,43 @@ def view_job(job_id):
     """View a specific job posting"""
     job = JobPosting.query.get_or_404(job_id)
     return render_template('view_job.html', job=job)
+
+
+@app.route('/find-matching-jobs', methods=['POST'])
+def find_matching_jobs():
+    """Find matching jobs using the latest uploaded resume"""
+    try:
+        # Check if vector index exists
+        if not os.path.exists("vector_index"):
+            return jsonify({"error": "No resume found. Please upload your resume first."}), 400
+
+        # Load the vector store to get the resume content
+        db = FAISS.load_local("vector_index", embeddings, allow_dangerous_deserialization=True)
+
+
+        latest_resume_file = max(
+            [os.path.join(app.config['UPLOAD_FOLDER'], f) for f in os.listdir(app.config['UPLOAD_FOLDER'])],
+            key=os.path.getctime
+        )
+        resume_text = extract_text_from_pdf(latest_resume_file)
+
+        resume_analysis = resume_analysis_chain.run(resume=resume_text)
+
+        # Find matching jobs
+        matching_jobs = find_matching_jobs(resume_text, top_k=5)
+
+        filename = os.path.basename(latest_resume_file)
+        # Store the results in session or temporary storage
+        # For now, we'll return success and redirect to results page
+        return render_template('results.html',
+                               resume_analysis=resume_analysis,
+                               matching_jobs=matching_jobs,
+                               filename=filename)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 @app.route('/jobs/<int:job_id>/delete', methods=['POST'])
