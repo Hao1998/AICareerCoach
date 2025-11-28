@@ -313,7 +313,7 @@ def view_job(job_id):
 
 
 @app.route('/find-matching-jobs', methods=['POST'])
-def find_matching_jobs():
+def find_matching_jobs_endpoint():
     """Find matching jobs using the latest uploaded resume"""
     try:
         # Check if vector index exists
@@ -332,7 +332,6 @@ def find_matching_jobs():
 
         resume_analysis = resume_analysis_chain.run(resume=resume_text)
 
-        # Find matching jobs
         matching_jobs = find_matching_jobs(resume_text, top_k=5)
 
         filename = os.path.basename(latest_resume_file)
