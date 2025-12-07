@@ -20,7 +20,15 @@ class JobPosting(db.Model):
     is_active = db.Column(db.Boolean, default=True)
 
     # Store embeddings as JSON string for simplicity
-    embedding_ids = db.Column(db.Text)  # Store FAISS indices
+    embedding_ids = db.Column(db.Text)  # Store FAISS indices (deprecated, use embedding instead)
+
+    # Pre-computed embedding vector (stored as pickled numpy array)
+    embedding = db.Column(db.PickleType)  # Store job embedding for fast retrieval
+    embedding_updated_at = db.Column(db.DateTime)  # Track when embedding was last updated
+
+    def get_job_text(self):
+        """Get combined text representation of the job for embedding"""
+        return f"{self.title} {self.description} {self.requirements or ''}"
 
     def to_dict(self):
         return {
