@@ -13,5 +13,6 @@ Flask-SQLAlchemy
 openai
 transformers
 pydantic>=2.7.4
+requests
 
 
