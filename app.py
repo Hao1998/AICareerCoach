@@ -16,6 +16,7 @@ from models import db, JobPosting, JobMatch
 import numpy as np
 import json
 from datetime import datetime
+from job_fetcher import fetch_jobs_from_adzuna
 
 text_splitter = CharacterTextSplitter(
     separator='\n',
@@ -586,6 +587,103 @@ def get_matches_api(filename):
     """API endpoint to get matches for a resume"""
     matches = JobMatch.query.filter_by(resume_filename=filename).order_by(JobMatch.match_score.desc()).all()
     return jsonify([match.to_dict() for match in matches])
+
+
+@app.route('/jobs/fetch', methods=['GET', 'POST'])
+def fetch_jobs():
+    """Fetch jobs from Adzuna API"""
+    if request.method == 'POST':
+        try:
+            # Get parameters from form
+            keywords = request.form.get('keywords', '').strip() or None
+            location = request.form.get('location', '').strip() or None
+            max_jobs = int(request.form.get('max_jobs', 50))
+            max_days_old = int(request.form.get('max_days_old', 30))
+
+            # Validate max_jobs
+            if max_jobs < 1 or max_jobs > 200:
+                return render_template('fetch_jobs.html',
+                                     error="Please enter a number between 1 and 200 for max jobs")
+
+            # Fetch jobs from Adzuna
+            stats = fetch_jobs_from_adzuna(
+                keywords=keywords,
+                location=location,
+                max_jobs=max_jobs,
+                max_days_old=max_days_old
+            )
+
+            # Check if there were errors
+            if stats['errors'] > 0:
+                error_msg = '; '.join(stats['error_messages'])
+                return render_template('fetch_jobs.html',
+                                     error=error_msg,
+                                     stats=stats)
+
+            # Success - redirect to jobs list with success message
+            return render_template('fetch_jobs.html',
+                                 success=True,
+                                 stats=stats)
+
+        except ValueError as e:
+            return render_template('fetch_jobs.html',
+                                 error=str(e))
+        except Exception as e:
+            return render_template('fetch_jobs.html',
+                                 error=f"Unexpected error: {str(e)}")
+
+    # GET request - show form
+    return render_template('fetch_jobs.html')
+
+
+@app.route('/api/jobs/fetch', methods=['POST'])
+def fetch_jobs_api():
+    """API endpoint to fetch jobs from Adzuna"""
+    try:
+        data = request.get_json() or {}
+
+        keywords = data.get('keywords')
+        location = data.get('location')
+        max_jobs = int(data.get('max_jobs', 50))
+        max_days_old = int(data.get('max_days_old', 30))
+
+        # Validate max_jobs
+        if max_jobs < 1 or max_jobs > 200:
+            return jsonify({
+                'success': False,
+                'error': 'max_jobs must be between 1 and 200'
+            }), 400
+
+        # Fetch jobs from Adzuna
+        stats = fetch_jobs_from_adzuna(
+            keywords=keywords,
+            location=location,
+            max_jobs=max_jobs,
+            max_days_old=max_days_old
+        )
+
+        if stats['errors'] > 0:
+            return jsonify({
+                'success': False,
+                'stats': stats,
+                'error': '; '.join(stats['error_messages'])
+            }), 500
+
+        return jsonify({
+            'success': True,
+            'stats': stats
+        })
+
+    except ValueError as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f"Unexpected error: {str(e)}"
+        }), 500
 
 
 if __name__ == "__main__":

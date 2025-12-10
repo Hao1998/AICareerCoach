@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fetch Jobs from Adzuna</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/framer-motion@10.12.16/dist/framer-motion.js"></script>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-blue-100 min-h-screen flex items-center justify-center p-4">
+    <div id="container" class="bg-white rounded-xl shadow-2xl p-8 max-w-3xl w-full">
+        <h1 class="text-4xl font-bold mb-2 text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-blue-400">
+            Fetch Jobs from Adzuna
+        </h1>
+        <p class="text-gray-600 text-center mb-6">
+            Search and import jobs from Adzuna's job board aggregator
+        </p>
+
+        {% if error %}
+        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mb-6" role="alert">
+            <strong class="font-bold">Error!</strong>
+            <span class="block sm:inline">{{ error }}</span>
+        </div>
+        {% endif %}
+
+        {% if success %}
+        <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded-lg mb-6" role="alert">
+            <strong class="font-bold">Success!</strong>
+            <p class="mt-2">Jobs have been fetched and stored successfully:</p>
+            <ul class="list-disc list-inside mt-2">
+                <li><strong>Fetched from API:</strong> {{ stats.fetched }}</li>
+                <li><strong>Stored in database:</strong> {{ stats.stored }}</li>
+                <li><strong>Duplicates skipped:</strong> {{ stats.duplicates }}</li>
+                {% if stats.errors > 0 %}
+                <li class="text-orange-600"><strong>Warnings:</strong> {{ stats.errors }}</li>
+                {% endif %}
+            </ul>
+            <div class="mt-4">
+                <a href="/jobs" class="inline-block bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-200">
+                    View All Jobs
+                </a>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if not success %}
+        <form method="POST" action="/jobs/fetch" class="space-y-6">
+            <div>
+                <label for="keywords" class="block text-sm font-bold text-gray-700 mb-2">
+                    Job Keywords
+                    <span class="text-gray-500 font-normal">(optional)</span>
+                </label>
+                <input type="text" id="keywords" name="keywords"
+                       class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600 focus:border-transparent"
+                       placeholder="e.g., python developer, data scientist, software engineer">
+                <p class="text-sm text-gray-600 mt-1">Leave empty to fetch all available jobs</p>
+            </div>
+
+            <div>
+                <label for="location" class="block text-sm font-bold text-gray-700 mb-2">
+                    Location
+                    <span class="text-gray-500 font-normal">(optional)</span>
+                </label>
+                <input type="text" id="location" name="location"
+                       class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600 focus:border-transparent"
+                       placeholder="e.g., San Francisco, New York, Remote">
+                <p class="text-sm text-gray-600 mt-1">Leave empty for all locations</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="max_jobs" class="block text-sm font-bold text-gray-700 mb-2">
+                        Maximum Jobs to Fetch
+                    </label>
+                    <input type="number" id="max_jobs" name="max_jobs" value="50" min="1" max="200"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600 focus:border-transparent">
+                    <p class="text-sm text-gray-600 mt-1">Between 1 and 200</p>
+                </div>
+
+                <div>
+                    <label for="max_days_old" class="block text-sm font-bold text-gray-700 mb-2">
+                        Maximum Age (Days)
+                    </label>
+                    <input type="number" id="max_days_old" name="max_days_old" value="30" min="1" max="365"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600 focus:border-transparent">
+                    <p class="text-sm text-gray-600 mt-1">Only jobs posted within this many days</p>
+                </div>
+            </div>
+
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h3 class="font-bold text-blue-800 mb-2">📋 Setup Required</h3>
+                <p class="text-sm text-blue-700 mb-2">
+                    To use this feature, you need Adzuna API credentials:
+                </p>
+                <ol class="text-sm text-blue-700 list-decimal list-inside space-y-1">
+                    <li>Visit <a href="https://developer.adzuna.com/" target="_blank" class="underline font-semibold">developer.adzuna.com</a> to register</li>
+                    <li>Get your App ID and App Key</li>
+                    <li>Set environment variables: <code class="bg-blue-100 px-1 rounded">ADZUNA_APP_ID</code> and <code class="bg-blue-100 px-1 rounded">ADZUNA_APP_KEY</code></li>
+                </ol>
+            </div>
+
+            <div class="flex gap-4 justify-end">
+                <a href="/jobs" class="bg-gray-500 text-white font-bold py-2 px-6 rounded-lg hover:bg-gray-600 transition duration-200 ease-in-out">
+                    Cancel
+                </a>
+                <button type="submit"
+                        id="submitBtn"
+                        class="bg-blue-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-blue-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-opacity-50">
+                    <span id="btnText">Fetch Jobs</span>
+                    <span id="btnLoading" class="hidden">Fetching...</span>
+                </button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+
+    <script>
+        const { motion } = window.Motion;
+
+        const container = document.getElementById('container');
+        motion(container, {
+            initial: { opacity: 0, y: 50 },
+            animate: { opacity: 1, y: 0 },
+            transition: { duration: 0.5, ease: "easeOut" }
+        });
+
+        // Add loading state to submit button
+        const form = document.querySelector('form');
+        if (form) {
+            form.addEventListener('submit', function() {
+                const btn = document.getElementById('submitBtn');
+                const btnText = document.getElementById('btnText');
+                const btnLoading = document.getElementById('btnLoading');
+
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+                btnText.classList.add('hidden');
+                btnLoading.classList.remove('hidden');
+            });
+        }
+    </script>
+</body>
+</html>
