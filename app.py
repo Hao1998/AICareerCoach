@@ -16,6 +16,7 @@ from models import db, JobPosting, JobMatch
 import numpy as np
 import json
 from datetime import datetime
+from job_fetching import fetch_jobs_from_adzuna
 
 text_splitter = CharacterTextSplitter(
     separator='\n',
@@ -75,15 +76,15 @@ def extract_text_from_pdf(pdf_path):
             text += reader.pages[page_num].extract_text()
     return text
 
+
 xai_api_key = os.getenv("XAI_API_KEY")
 if not xai_api_key:
     raise RuntimeError("XAI_API_KEY environment variable is not set")
 
-
 llm = ChatXAI(
     model="grok-3",
     temperature=0,
-    api_key=os.getenv('XAI_API_KEY',xai_api_key)  # Set XAI_API_KEY env var or replace here
+    api_key=os.getenv('XAI_API_KEY', xai_api_key)  # Set XAI_API_KEY env var or replace here
 )
 
 resume_summary_template = """
@@ -157,7 +158,7 @@ job_matching_chain = LLMChain(
 def calculate_embedding_similarity(resume_embedding, job_embedding):
     """Calculate cosine similarity between resume and job embeddings"""
     similarity = np.dot(resume_embedding, job_embedding) / (
-        np.linalg.norm(resume_embedding) * np.linalg.norm(job_embedding)
+            np.linalg.norm(resume_embedding) * np.linalg.norm(job_embedding)
     )
     return float(similarity)
 
@@ -423,9 +424,9 @@ def upload_file():
         db.session.commit()
 
         return render_template('results.html',
-                             resume_analysis=resume_analysis,
-                             matching_jobs=matching_jobs,
-                             filename=filename)
+                               resume_analysis=resume_analysis,
+                               matching_jobs=matching_jobs,
+                               filename=filename)
 
 
 @app.route('/ask', methods=['GET', 'POST'])
@@ -442,6 +443,94 @@ def list_jobs():
     """Display all active job postings"""
     jobs = JobPosting.query.filter_by(is_active=True).order_by(JobPosting.posted_date.desc()).all()
     return render_template('jobs.html', jobs=jobs)
+
+
+@app.route('/jobs/fetch', methods=['GET', 'POST'])
+def fetch_jobs():
+    """Fetch jobs from Adzuna API"""
+    if request.method == 'POST':
+        try:
+            # Get parameters from form
+            keywords = request.form.get('keywords', '').strip() or None
+            location = request.form.get('location', '').strip() or None
+            max_jobs = int(request.form.get('max_jobs', 50))
+            max_days_old = int(request.form.get('max_days_old', 30))
+            # Validate max_jobs
+            if max_jobs < 1 or max_jobs > 200:
+                return render_template('fetch_jobs.html',
+                                       error="Please enter a number between 1 and 200 for max jobs")
+
+            stats = fetch_jobs_from_adzuna(
+                keywords=keywords,
+                location=location,
+                max_jobs=max_jobs,
+                max_days_old=max_days_old
+            )
+
+            # Check if there are any errors
+            if stats['errors'] > 0:
+                error_msg = '; '.join(stats['error_messages'])
+                return render_template('fetch_jobs.html',
+                                       error=error_msg,
+                                       stats=stats)
+
+            # Success - redirect to jobs list with success message
+            return render_template('fetch_jobs.html',
+                                   success=True,
+                                   stats=stats)
+        except ValueError as e:
+            return render_template('fetch_jobs.html',
+                                   error=str(e))
+        except Exception as e:
+            return render_template('fetch_jobs.html',
+                                   error=f"Unexpected error: {str(e)}")
+    # GET request - show form
+    return render_template('fetch_jobs.html')
+
+
+@app.route('/api/jobs/fetch', methods=['POST'])
+def fetch_jobs_api():
+    """API endpoint to fetch jobs from Adzuna"""
+    try:
+        data = request.get_json() or {}
+        keywords = data.get('keywords')
+        location = data.get('location')
+        max_jobs = int(data.get('max_jobs', 50))
+        max_days_old = int(data.get('max_days_old', 30))
+        # Validate max_jobs
+        if max_jobs < 1 or max_jobs > 200:
+            return jsonify({
+                'success': False,
+                'error': 'max_jobs must be between 1 and 200'
+            }), 400
+        # Fetch jobs from Adzuna
+        stats = fetch_jobs_from_adzuna(
+            keywords=keywords,
+            location=location,
+            max_jobs=max_jobs,
+            max_days_old=max_days_old
+        )
+        if stats['errors'] > 0:
+            return jsonify({
+                'success': False,
+                'stats': stats,
+                'error': '; '.join(stats['error_messages'])
+            }), 500
+        return jsonify({
+            'success': True,
+            'stats': stats
+        })
+    except ValueError as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f"Unexpected error: {str(e)}"
+        }), 500
+
 
 @app.route('/check-resume-status', methods=['GET'])
 def check_resume_status():
@@ -503,7 +592,6 @@ def find_matching_jobs_endpoint():
         # Load the vector store to get the resume content
         db = FAISS.load_local("vector_index", embeddings, allow_dangerous_deserialization=True)
 
-
         latest_resume_file = max(
             [os.path.join(app.config['UPLOAD_FOLDER'], f) for f in os.listdir(app.config['UPLOAD_FOLDER'])],
             key=os.path.getctime
@@ -524,8 +612,6 @@ def find_matching_jobs_endpoint():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
 
 
 @app.route('/jobs/rebuild-index', methods=['POST'])

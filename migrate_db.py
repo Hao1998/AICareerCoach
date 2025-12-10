@@ -11,7 +11,7 @@ Run this once after updating the models.py file.
 import sqlite3
 import os
 
-DB_PATH = 'career_coach.db'
+DB_PATH = 'instance/career_coach.db'
 
 def migrate_database():
     """Add new columns to job_postings table"""
