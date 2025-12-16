@@ -16,8 +16,15 @@ from models import db, JobPosting, JobMatch
 import numpy as np
 import json
 from datetime import datetime
-from job_fetching import fetch_jobs_from_adzuna
-
+from job_fetcher import fetch_jobs_from_adzuna
+from job_utils import (
+    embeddings,
+    JOB_VECTOR_INDEX,
+    compute_job_embedding,
+    compute_all_job_embeddings,
+    build_job_faiss_index,
+    get_job_faiss_index
+)
 
 text_splitter = CharacterTextSplitter(
     separator='\n',
@@ -25,9 +32,6 @@ text_splitter = CharacterTextSplitter(
     chunk_overlap=200,
     length_function=len,
 )
-
-embeddings = HuggingFaceEmbeddings()
-
 
 def perform_qa(query):
     db = FAISS.load_local("vector_index", embeddings, allow_dangerous_deserialization=True)
@@ -46,7 +50,6 @@ db.init_app(app)
 
 # File upload configuration
 UPLOAD_FOLDER = 'uploads'
-JOB_VECTOR_INDEX = 'job_vector_index'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 if not os.path.exists(UPLOAD_FOLDER):
@@ -59,14 +62,6 @@ if not os.path.exists(JOB_VECTOR_INDEX):
 with app.app_context():
     db.create_all()
 
-    # Build job index on startup if it doesn't exist
-    try:
-        if not os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
-            print("Job index not found, building initial index...")
-            build_job_faiss_index()
-            print("Job index built successfully")
-    except Exception as e:
-        print(f"Warning: Could not build job index on startup: {e}")
 
 
 def extract_text_from_pdf(pdf_path):
@@ -164,77 +159,6 @@ def calculate_embedding_similarity(resume_embedding, job_embedding):
     return float(similarity)
 
 
-def compute_job_embedding(job):
-    """Compute and store embedding for a single job"""
-    job_text = job.get_job_text()
-    job.embedding = embeddings.embed_query(job_text)
-    job.embedding_updated_at = datetime.utcnow()
-    return job.embedding
-
-
-def compute_all_job_embeddings():
-    """Pre-compute embeddings for all active jobs (run once or when jobs are updated)"""
-    jobs = JobPosting.query.filter_by(is_active=True).all()
-
-    updated_count = 0
-    for job in jobs:
-        if job.embedding is None:
-            compute_job_embedding(job)
-            updated_count += 1
-
-    db.session.commit()
-    return updated_count
-
-
-def build_job_faiss_index():
-    """Build FAISS index from all active job embeddings for fast similarity search"""
-    # First ensure all jobs have embeddings
-    compute_all_job_embeddings()
-
-    # Get all active jobs with embeddings
-    jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
-
-    if not jobs:
-        print("No jobs available to build index")
-        return None
-
-    # Extract embeddings and metadata
-    job_texts = [job.get_job_text() for job in jobs]
-    job_embeddings = [job.embedding for job in jobs]
-    job_metadatas = [{"job_id": job.id} for job in jobs]
-
-    # Create FAISS vector store
-    vectorstore = FAISS.from_embeddings(
-        text_embeddings=list(zip(job_texts, job_embeddings)),
-        embedding=embeddings,
-        metadatas=job_metadatas
-    )
-
-    # Save to disk
-    vectorstore.save_local(JOB_VECTOR_INDEX)
-    print(f"Built FAISS index for {len(jobs)} jobs")
-
-    return vectorstore
-
-
-def get_job_faiss_index():
-    """Load or build FAISS index for job embeddings"""
-    try:
-        # Try to load existing index
-        if os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
-            vectorstore = FAISS.load_local(
-                JOB_VECTOR_INDEX,
-                embeddings,
-                allow_dangerous_deserialization=True
-            )
-            return vectorstore
-        else:
-            # Build new index if doesn't exist
-            return build_job_faiss_index()
-    except Exception as e:
-        print(f"Error loading FAISS index: {e}")
-        # Rebuild if loading fails
-        return build_job_faiss_index()
 
 
 def find_matching_jobs_old(resume_text, top_k=5):
@@ -456,11 +380,13 @@ def fetch_jobs():
             location = request.form.get('location', '').strip() or None
             max_jobs = int(request.form.get('max_jobs', 50))
             max_days_old = int(request.form.get('max_days_old', 30))
+
             # Validate max_jobs
             if max_jobs < 1 or max_jobs > 200:
                 return render_template('fetch_jobs.html',
                                        error="Please enter a number between 1 and 200 for max jobs")
 
+            # Fetch jobs from Adzuna
             stats = fetch_jobs_from_adzuna(
                 keywords=keywords,
                 location=location,
@@ -468,7 +394,7 @@ def fetch_jobs():
                 max_days_old=max_days_old
             )
 
-            # Check if there are any errors
+            # Check if there were errors
             if stats['errors'] > 0:
                 error_msg = '; '.join(stats['error_messages'])
                 return render_template('fetch_jobs.html',
@@ -479,15 +405,16 @@ def fetch_jobs():
             return render_template('fetch_jobs.html',
                                    success=True,
                                    stats=stats)
+
         except ValueError as e:
             return render_template('fetch_jobs.html',
                                    error=str(e))
         except Exception as e:
             return render_template('fetch_jobs.html',
                                    error=f"Unexpected error: {str(e)}")
+
     # GET request - show form
     return render_template('fetch_jobs.html')
-
 
 @app.route('/api/jobs/fetch', methods=['POST'])
 def fetch_jobs_api():
@@ -675,102 +602,14 @@ def get_matches_api(filename):
     return jsonify([match.to_dict() for match in matches])
 
 
-@app.route('/jobs/fetch', methods=['GET', 'POST'])
-def fetch_jobs():
-    """Fetch jobs from Adzuna API"""
-    if request.method == 'POST':
-        try:
-            # Get parameters from form
-            keywords = request.form.get('keywords', '').strip() or None
-            location = request.form.get('location', '').strip() or None
-            max_jobs = int(request.form.get('max_jobs', 50))
-            max_days_old = int(request.form.get('max_days_old', 30))
-
-            # Validate max_jobs
-            if max_jobs < 1 or max_jobs > 200:
-                return render_template('fetch_jobs.html',
-                                     error="Please enter a number between 1 and 200 for max jobs")
-
-            # Fetch jobs from Adzuna
-            stats = fetch_jobs_from_adzuna(
-                keywords=keywords,
-                location=location,
-                max_jobs=max_jobs,
-                max_days_old=max_days_old
-            )
-
-            # Check if there were errors
-            if stats['errors'] > 0:
-                error_msg = '; '.join(stats['error_messages'])
-                return render_template('fetch_jobs.html',
-                                     error=error_msg,
-                                     stats=stats)
-
-            # Success - redirect to jobs list with success message
-            return render_template('fetch_jobs.html',
-                                 success=True,
-                                 stats=stats)
-
-        except ValueError as e:
-            return render_template('fetch_jobs.html',
-                                 error=str(e))
-        except Exception as e:
-            return render_template('fetch_jobs.html',
-                                 error=f"Unexpected error: {str(e)}")
-
-    # GET request - show form
-    return render_template('fetch_jobs.html')
-
-
-@app.route('/api/jobs/fetch', methods=['POST'])
-def fetch_jobs_api():
-    """API endpoint to fetch jobs from Adzuna"""
-    try:
-        data = request.get_json() or {}
-
-        keywords = data.get('keywords')
-        location = data.get('location')
-        max_jobs = int(data.get('max_jobs', 50))
-        max_days_old = int(data.get('max_days_old', 30))
-
-        # Validate max_jobs
-        if max_jobs < 1 or max_jobs > 200:
-            return jsonify({
-                'success': False,
-                'error': 'max_jobs must be between 1 and 200'
-            }), 400
-
-        # Fetch jobs from Adzuna
-        stats = fetch_jobs_from_adzuna(
-            keywords=keywords,
-            location=location,
-            max_jobs=max_jobs,
-            max_days_old=max_days_old
-        )
-
-        if stats['errors'] > 0:
-            return jsonify({
-                'success': False,
-                'stats': stats,
-                'error': '; '.join(stats['error_messages'])
-            }), 500
-
-        return jsonify({
-            'success': True,
-            'stats': stats
-        })
-
-    except ValueError as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 400
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': f"Unexpected error: {str(e)}"
-        }), 500
-
-
 if __name__ == "__main__":
+    # Build job index on startup if it doesn't exist
+    try:
+        if not os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
+            print("Job index not found, building initial index...")
+            build_job_faiss_index()
+            print("Job index built successfully")
+    except Exception as e:
+        print(f"Warning: Could not build job index on startup: {e}")
+    
     app.run(host='0.0.0.0', port=5001)

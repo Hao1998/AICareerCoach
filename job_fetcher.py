@@ -5,7 +5,7 @@ import requests
 import os
 from datetime import datetime
 from models import db, JobPosting
-from app import compute_job_embedding, build_job_faiss_index
+from job_utils import compute_job_embedding, build_job_faiss_index
 
 class AdzunaJobFetcher:
     """Fetch jobs from Adzuna API"""
