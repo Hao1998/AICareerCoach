@@ -215,6 +215,73 @@ job_matching_chain = LLMChain(
     prompt=job_matching_prompt,
 )
 
+# Preparation roadmap prompt template
+preparation_roadmap_template = """
+Role: You are an AI Career Coach creating personalized interview preparation roadmaps.
+
+Task: Given a candidate's resume, job posting details, current skill gaps, and a preparation timeline, create a detailed month-by-month preparation roadmap.
+
+Resume:
+{resume}
+
+Job Details:
+Title: {job_title}
+Company: {company}
+Description: {job_description}
+Requirements: {job_requirements}
+
+Current Skill Gaps:
+{skill_gaps}
+
+Timeline: {timeline_months} months
+
+Create a comprehensive preparation roadmap divided into phases. For a {timeline_months}-month timeline:
+- If 3 months: Create 3 phases (Foundation, Intermediate, Advanced)
+- If 6 months: Create 4-5 phases with more detailed preparation
+- If 9 months: Create 5-6 phases with comprehensive coverage
+
+For each phase, provide:
+1. Phase name and duration
+2. Specific skills to learn (related to the skill gaps)
+3. Recommended learning resources (courses, books, documentation)
+4. Hands-on projects to build (that demonstrate the required skills)
+5. Milestones to achieve
+
+Also provide an overview and final tips.
+
+Provide your roadmap in the following JSON format:
+{{
+    "overview": "Brief overview of the preparation plan",
+    "phases": [
+        {{
+            "phase_name": "Phase name (e.g., 'Foundation Building')",
+            "duration": "Time period (e.g., 'Month 1-2' or 'Weeks 1-4')",
+            "skills": ["skill1", "skill2", "skill3"],
+            "resources": ["resource1 with description", "resource2 with description"],
+            "projects": ["project1 description", "project2 description"],
+            "milestones": ["milestone1", "milestone2"]
+        }}
+    ],
+    "final_tips": "Important advice for success"
+}}
+
+Make sure the roadmap is:
+- Specific to the skill gaps identified
+- Realistic for the given timeline
+- Actionable with concrete steps
+- Progressive from foundational to advanced topics
+"""
+
+preparation_roadmap_prompt = PromptTemplate(
+    input_variables=["resume", "job_title", "company", "job_description", "job_requirements", "skill_gaps", "timeline_months"],
+    template=preparation_roadmap_template,
+)
+
+preparation_roadmap_chain = LLMChain(
+    llm=llm,
+    prompt=preparation_roadmap_prompt,
+)
+
 
 def calculate_embedding_similarity(resume_embedding, job_embedding):
     """Calculate cosine similarity between resume and job embeddings"""
@@ -755,6 +822,110 @@ def get_matches_api(filename):
     """API endpoint to get matches for a resume"""
     matches = JobMatch.query.filter_by(resume_filename=filename).order_by(JobMatch.match_score.desc()).all()
     return jsonify([match.to_dict() for match in matches])
+
+
+@app.route('/api/prepare-roadmap', methods=['POST'])
+def prepare_roadmap():
+    """Generate a preparation roadmap for a specific job"""
+    try:
+        data = request.get_json()
+        job_id = data.get('job_id')
+        timeline_months = data.get('timeline_months')
+
+        if not job_id or not timeline_months:
+            return jsonify({
+                "success": False,
+                "error": "Missing job_id or timeline_months"
+            }), 400
+
+        # Get the job details
+        job = JobPosting.query.get(job_id)
+        if not job:
+            return jsonify({
+                "success": False,
+                "error": "Job not found"
+            }), 404
+
+        # Get the latest resume
+        upload_folder = app.config['UPLOAD_FOLDER']
+        if not os.path.exists(upload_folder):
+            return jsonify({
+                "success": False,
+                "error": "No resume uploaded"
+            }), 400
+
+        files = [f for f in os.listdir(upload_folder) if f.endswith('.pdf')]
+        if not files:
+            return jsonify({
+                "success": False,
+                "error": "No resume found"
+            }), 400
+
+        # Get the most recent resume file
+        latest_file = max(files, key=lambda f: os.path.getctime(os.path.join(upload_folder, f)))
+        resume_path = os.path.join(upload_folder, latest_file)
+
+        # Extract resume text
+        resume_text = extract_text_from_pdf(resume_path)
+
+        # Get or create job match to find skill gaps
+        job_match = JobMatch.query.filter_by(
+            resume_filename=latest_file,
+            job_id=job_id
+        ).first()
+
+        skill_gaps = []
+        if job_match and job_match.skill_gaps:
+            skill_gaps = job_match.skill_gaps
+        else:
+            # If no existing match, run quick analysis to get skill gaps
+            try:
+                analysis_result = job_matching_chain.run(
+                    resume=resume_text[:3000],
+                    job_title=job.title,
+                    company=job.company,
+                    job_description=job.description[:1000],
+                    job_requirements=job.requirements[:1000] if job.requirements else "Not specified"
+                )
+                analysis = json.loads(analysis_result)
+                skill_gaps = analysis.get('skill_gaps', [])
+            except:
+                skill_gaps = ["General skill development needed"]
+
+        # Convert skill gaps list to string for prompt
+        skill_gaps_str = ", ".join(skill_gaps) if skill_gaps else "No specific gaps identified"
+
+        # Generate the preparation roadmap
+        roadmap_result = preparation_roadmap_chain.run(
+            resume=resume_text[:3000],
+            job_title=job.title,
+            company=job.company,
+            job_description=job.description[:1500],
+            job_requirements=job.requirements[:1500] if job.requirements else "Not specified",
+            skill_gaps=skill_gaps_str,
+            timeline_months=timeline_months
+        )
+
+        # Parse the JSON response
+        roadmap = json.loads(roadmap_result)
+
+        return jsonify({
+            "success": True,
+            "roadmap": roadmap,
+            "job_title": job.title,
+            "timeline_months": timeline_months
+        })
+
+    except json.JSONDecodeError as e:
+        return jsonify({
+            "success": False,
+            "error": f"Failed to parse roadmap: {str(e)}"
+        }), 500
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Error generating roadmap: {str(e)}"
+        }), 500
 
 
 if __name__ == "__main__":
