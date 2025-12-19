@@ -9,227 +9,242 @@
     <script src="https://unpkg.com/framer-motion@10.12.16/dist/framer-motion.js"></script>
 </head>
 <body class="bg-gradient-to-br from-blue-50 to-blue-100 min-h-screen p-4">
-    <div id="container" class="bg-white rounded-xl shadow-2xl p-8 max-w-6xl mx-auto my-8">
-        <h1 class="text-4xl font-bold mb-6 text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-blue-400">Resume Analysis Results</h1>
+<div id="container" class="bg-white rounded-xl shadow-2xl p-8 max-w-6xl mx-auto my-8">
+    <h1 class="text-4xl font-bold mb-6 text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-blue-400">
+        Resume Analysis Results</h1>
 
-        <!-- Resume Analysis Section -->
-        <div id="result" class="bg-gray-50 rounded-lg p-6 border border-gray-200 overflow-auto max-h-96 mb-8">
-            <pre class="text-sm text-gray-700 whitespace-pre-wrap">{{ resume_analysis }}</pre>
-        </div>
+    <!-- Resume Analysis Section -->
+    <div id="result" class="bg-gray-50 rounded-lg p-6 border border-gray-200 overflow-auto max-h-96 mb-8">
+        <pre class="text-sm text-gray-700 whitespace-pre-wrap">{{ resume_analysis }}</pre>
+    </div>
 
-        <!-- Job Matches Section -->
-        {% if matching_jobs %}
+    <!-- Job Matches Section -->
+    {% if matching_jobs %}
         <div id="matches" class="mt-8">
-            <h2 class="text-3xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-green-600 to-green-400">Top Matching Jobs</h2>
+            <h2 class="text-3xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-green-600 to-green-400">
+                Top Matching Jobs</h2>
             {% if matching_jobs|length == 0 %}
                 <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
                     <p class="text-yellow-800">No matching jobs found. Please add job postings to see matches!</p>
-                    <a href="/jobs/add" class="mt-4 inline-block bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-yellow-700 transition">
+                    <a href="/jobs/add"
+                       class="mt-4 inline-block bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-yellow-700 transition">
                         Add Job Posting
                     </a>
                 </div>
             {% else %}
                 <div class="space-y-6">
                     {% for match in matching_jobs %}
-                    <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-md hover:shadow-lg transition-shadow">
-                        <div class="flex justify-between items-start mb-4">
-                            <div class="flex-1">
-                                <h3 class="text-xl font-bold text-gray-800">{{ match.job.title }}</h3>
-                                <p class="text-gray-600">{{ match.job.company }} • {{ match.job.location }}</p>
-                                <span class="inline-block mt-2 px-3 py-1 bg-blue-100 text-blue-800 text-sm rounded-full">{{ match.job.job_type }}</span>
-                            </div>
-                            <div class="text-right">
-                                <div class="text-3xl font-bold {% if match.analysis.match_score >= 80 %}text-green-600{% elif match.analysis.match_score >= 60 %}text-yellow-600{% else %}text-orange-600{% endif %}">
-                                    {{ "%.0f"|format(match.analysis.match_score) }}%
+                        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-md hover:shadow-lg transition-shadow">
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="flex-1">
+                                    <h3 class="text-xl font-bold text-gray-800">{{ match.job.title }}</h3>
+                                    <p class="text-gray-600">{{ match.job.company }} • {{ match.job.location }}</p>
+                                    <span class="inline-block mt-2 px-3 py-1 bg-blue-100 text-blue-800 text-sm rounded-full">{{ match.job.job_type }}</span>
                                 </div>
-                                <p class="text-sm text-gray-500">Match Score</p>
+                                <div class="text-right">
+                                    <div class="text-3xl font-bold {% if match.analysis.match_score >= 80 %}text-green-600{% elif match.analysis.match_score >= 60 %}text-yellow-600{% else %}text-orange-600{% endif %}">
+                                        {{ "%.0f"|format(match.analysis.match_score) }}%
+                                    </div>
+                                    <p class="text-sm text-gray-500">Match Score</p>
+                                </div>
                             </div>
-                        </div>
 
-                        <div class="mb-4">
-                            <h4 class="font-semibold text-gray-700 mb-2">Job Description:</h4>
-                            <p class="text-gray-600 text-sm">{{ match.job.description[:200] }}{% if match.job.description|length > 200 %}...{% endif %}</p>
-                        </div>
-
-                        {% if match.analysis.matched_skills %}
-                        <div class="mb-4">
-                            <h4 class="font-semibold text-green-700 mb-2">Matched Skills:</h4>
-                            <div class="flex flex-wrap gap-2">
-                                {% for skill in match.analysis.matched_skills %}
-                                <span class="px-3 py-1 bg-green-100 text-green-800 text-xs rounded-full">{{ skill }}</span>
-                                {% endfor %}
+                            <div class="mb-4">
+                                <h4 class="font-semibold text-gray-700 mb-2">Job Description:</h4>
+                                <p class="text-gray-600 text-sm">
+                                    {{ match.job.description[:200] }}{% if match.job.description|length > 200 %}
+                                        ...{% endif %}</p>
                             </div>
-                        </div>
-                        {% endif %}
 
-                        {% if match.analysis.skill_gaps %}
-                        <div class="mb-4">
-                            <h4 class="font-semibold text-red-700 mb-2">Skill Gaps:</h4>
-                            <div class="flex flex-wrap gap-2">
-                                {% for gap in match.analysis.skill_gaps %}
-                                <span class="px-3 py-1 bg-red-100 text-red-800 text-xs rounded-full">{{ gap }}</span>
-                                {% endfor %}
+                            {% if match.analysis.matched_skills %}
+                                <div class="mb-4">
+                                    <h4 class="font-semibold text-green-700 mb-2">Matched Skills:</h4>
+                                    <div class="flex flex-wrap gap-2">
+                                        {% for skill in match.analysis.matched_skills %}
+                                            <span class="px-3 py-1 bg-green-100 text-green-800 text-xs rounded-full">{{ skill }}</span>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+
+                            {% if match.analysis.skill_gaps %}
+                                <div class="mb-4">
+                                    <h4 class="font-semibold text-red-700 mb-2">Skill Gaps:</h4>
+                                    <div class="flex flex-wrap gap-2">
+                                        {% for gap in match.analysis.skill_gaps %}
+                                            <span class="px-3 py-1 bg-red-100 text-red-800 text-xs rounded-full">{{ gap }}</span>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+
+                            <div class="bg-blue-50 rounded-lg p-4 mt-4">
+                                <h4 class="font-semibold text-blue-700 mb-2">Recommendation:</h4>
+                                <p class="text-sm text-gray-700">{{ match.analysis.recommendation }}</p>
                             </div>
-                        </div>
-                        {% endif %}
 
-                        <div class="bg-blue-50 rounded-lg p-4 mt-4">
-                            <h4 class="font-semibold text-blue-700 mb-2">Recommendation:</h4>
-                            <p class="text-sm text-gray-700">{{ match.analysis.recommendation }}</p>
-                        </div>
+                            <div class="mt-4 flex gap-2">
+                                <a href="/jobs/{{ match.job.id }}"
+                                   class="bg-blue-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">
+                                    View Full Details
+                                </a>
 
-                        <div class="mt-4 flex gap-2">
-                            <a href="/jobs/{{ match.job.id }}" class="bg-blue-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">
-                                View Full Details
-                            </a>
-
-                            <!-- Prepare to Apply Dropdown -->
-                            <div class="relative inline-block">
-                                <button onclick="toggleDropdown({{ match.job.id }})" class="bg-gradient-to-r from-purple-600 to-pink-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:from-purple-700 hover:to-pink-700 transition flex items-center gap-2">
-                                    <span>📋 Prepare to Apply</span>
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </button>
-                                <div id="dropdown-{{ match.job.id }}" class="hidden absolute left-0 mt-2 w-48 rounded-lg shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10">
-                                    <div class="py-1">
-                                        <button onclick="generateRoadmap({{ match.job.id }}, 3)" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-purple-50 hover:text-purple-900 transition">
-                                            🗓️ 3 Months Plan
-                                        </button>
-                                        <button onclick="generateRoadmap({{ match.job.id }}, 6)" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-purple-50 hover:text-purple-900 transition">
-                                            🗓️ 6 Months Plan
-                                        </button>
-                                        <button onclick="generateRoadmap({{ match.job.id }}, 9)" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-purple-50 hover:text-purple-900 transition">
-                                            🗓️ 9 Months Plan
-                                        </button>
+                                <!-- Prepare to Apply Dropdown -->
+                                <div class="relative inline-block">
+                                    <button onclick="toggleDropdown({{ match.job.id }})"
+                                            class="bg-gradient-to-r from-purple-600 to-pink-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:from-purple-700 hover:to-pink-700 transition flex items-center gap-2">
+                                        <span>📋 Prepare to Apply</span>
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                  d="M19 9l-7 7-7-7"></path>
+                                        </svg>
+                                    </button>
+                                    <div id="dropdown-{{ match.job.id }}"
+                                         class="hidden absolute left-0 mt-2 w-48 rounded-lg shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10">
+                                        <div class="py-1">
+                                            <button onclick="generateRoadmap({{ match.job.id }}, 3)"
+                                                    class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-purple-50 hover:text-purple-900 transition">
+                                                🗓️ 3 Months Plan
+                                            </button>
+                                            <button onclick="generateRoadmap({{ match.job.id }}, 6)"
+                                                    class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-purple-50 hover:text-purple-900 transition">
+                                                🗓️ 6 Months Plan
+                                            </button>
+                                            <button onclick="generateRoadmap({{ match.job.id }}, 9)"
+                                                    class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-purple-50 hover:text-purple-900 transition">
+                                                🗓️ 9 Months Plan
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
-                    </div>
                     {% endfor %}
                 </div>
             {% endif %}
         </div>
-        {% endif %}
+    {% endif %}
 
-        <div class="mt-8 flex justify-between flex-wrap gap-4">
-            <a href="/" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-opacity-50">
-                Go Back
-            </a>
-            <a href="/jobs" class="bg-purple-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-purple-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:ring-opacity-50">
-                View All Jobs
-            </a>
-            <a href="/ask" class="bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-600 focus:ring-opacity-50">
-                Ask a Question
-            </a>
+    <div class="mt-8 flex justify-between flex-wrap gap-4">
+        <a href="/"
+           class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-opacity-50">
+            Go Back
+        </a>
+        <a href="/jobs"
+           class="bg-purple-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-purple-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:ring-opacity-50">
+            View All Jobs
+        </a>
+        <a href="/ask"
+           class="bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-600 focus:ring-opacity-50">
+            Ask a Question
+        </a>
+    </div>
+</div>
+
+<!-- Roadmap Modal -->
+<div id="roadmapModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+        <div class="sticky top-0 bg-gradient-to-r from-purple-600 to-pink-600 text-white p-6 rounded-t-xl flex justify-between items-center">
+            <h2 class="text-2xl font-bold">📋 Your Preparation Roadmap</h2>
+            <button onclick="closeModal()" class="text-white hover:text-gray-200 text-3xl font-bold">&times;</button>
+        </div>
+        <div id="roadmapContent" class="p-6">
+            <div class="flex justify-center items-center py-12">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
+                <span class="ml-4 text-gray-600">Generating your personalized roadmap...</span>
+            </div>
         </div>
     </div>
+</div>
 
-    <!-- Roadmap Modal -->
-    <div id="roadmapModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            <div class="sticky top-0 bg-gradient-to-r from-purple-600 to-pink-600 text-white p-6 rounded-t-xl flex justify-between items-center">
-                <h2 class="text-2xl font-bold">📋 Your Preparation Roadmap</h2>
-                <button onclick="closeModal()" class="text-white hover:text-gray-200 text-3xl font-bold">&times;</button>
-            </div>
-            <div id="roadmapContent" class="p-6">
-                <div class="flex justify-center items-center py-12">
-                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
-                    <span class="ml-4 text-gray-600">Generating your personalized roadmap...</span>
-                </div>
-            </div>
-        </div>
-    </div>
+<script>
+    const {motion} = window.Motion;
 
-    <script>
-        const { motion } = window.Motion;
+    const container = document.getElementById('container');
+    const result = document.getElementById('result');
+    const links = document.querySelectorAll('a');
 
-        const container = document.getElementById('container');
-        const result = document.getElementById('result');
-        const links = document.querySelectorAll('a');
+    motion(container, {
+        initial: {opacity: 0, y: 50},
+        animate: {opacity: 1, y: 0},
+        transition: {duration: 0.5, ease: "easeOut"}
+    });
 
-        motion(container, {
-            initial: { opacity: 0, y: 50 },
-            animate: { opacity: 1, y: 0 },
-            transition: { duration: 0.5, ease: "easeOut" }
+    motion(result, {
+        initial: {opacity: 0, scale: 0.95},
+        animate: {opacity: 1, scale: 1},
+        transition: {duration: 0.5, delay: 0.2, ease: "easeOut"}
+    });
+
+    links.forEach(link => {
+        motion(link, {
+            whileHover: {scale: 1.05},
+            whileTap: {scale: 0.95},
+            transition: {duration: 0.2}
         });
+    });
 
-        motion(result, {
-            initial: { opacity: 0, scale: 0.95 },
-            animate: { opacity: 1, scale: 1 },
-            transition: { duration: 0.5, delay: 0.2, ease: "easeOut" }
-        });
-
-        links.forEach(link => {
-            motion(link, {
-                whileHover: { scale: 1.05 },
-                whileTap: { scale: 0.95 },
-                transition: { duration: 0.2 }
-            });
-        });
-
-        // Dropdown toggle function
-        function toggleDropdown(jobId) {
-            const dropdown = document.getElementById(`dropdown-${jobId}`);
-            // Close all other dropdowns first
-            document.querySelectorAll('[id^="dropdown-"]').forEach(d => {
-                if (d.id !== `dropdown-${jobId}`) {
-                    d.classList.add('hidden');
-                }
-            });
-            dropdown.classList.toggle('hidden');
-        }
-
-        // Close dropdowns when clicking outside
-        document.addEventListener('click', function(event) {
-            if (!event.target.closest('.relative')) {
-                document.querySelectorAll('[id^="dropdown-"]').forEach(d => {
-                    d.classList.add('hidden');
-                });
+    // Dropdown toggle function
+    function toggleDropdown(jobId) {
+        const dropdown = document.getElementById(`dropdown-${jobId}`);
+        // Close all other dropdowns first
+        document.querySelectorAll('[id^="dropdown-"]').forEach(d => {
+            if (d.id !== `dropdown-${jobId}`) {
+                d.classList.add('hidden');
             }
         });
+        dropdown.classList.toggle('hidden');
+    }
 
-        // Generate roadmap function
-        async function generateRoadmap(jobId, months) {
-            // Close the dropdown
-            document.getElementById(`dropdown-${jobId}`).classList.add('hidden');
+    // Close dropdowns when clicking outside
+    document.addEventListener('click', function (event) {
+        if (!event.target.closest('.relative')) {
+            document.querySelectorAll('[id^="dropdown-"]').forEach(d => {
+                d.classList.add('hidden');
+            });
+        }
+    });
 
-            // Show modal with loading state
-            const modal = document.getElementById('roadmapModal');
-            const content = document.getElementById('roadmapContent');
-            modal.classList.remove('hidden');
-            content.innerHTML = `
+    // Generate roadmap function
+    async function generateRoadmap(jobId, months) {
+        // Close the dropdown
+        document.getElementById(`dropdown-${jobId}`).classList.add('hidden');
+
+        // Show modal with loading state
+        const modal = document.getElementById('roadmapModal');
+        const content = document.getElementById('roadmapContent');
+        modal.classList.remove('hidden');
+        content.innerHTML = `
                 <div class="flex justify-center items-center py-12">
                     <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
                     <span class="ml-4 text-gray-600">Generating your ${months}-month preparation roadmap...</span>
                 </div>
             `;
 
-            try {
-                // Call API to generate roadmap
-                const response = await fetch('/api/prepare-roadmap', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        job_id: jobId,
-                        timeline_months: months
-                    })
-                });
+        try {
+            // Call API to generate roadmap
+            const response = await fetch('/api/prepare-roadmap', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    job_id: jobId,
+                    timeline_months: months
+                })
+            });
 
-                if (!response.ok) {
-                    throw new Error('Failed to generate roadmap');
-                }
+            if (!response.ok) {
+                throw new Error('Failed to generate roadmap');
+            }
 
-                const data = await response.json();
+            const data = await response.json();
 
-                // Display the roadmap
-                displayRoadmap(data.roadmap, months);
+            // Display the roadmap
+            displayRoadmap(data.roadmap, months);
 
-            } catch (error) {
-                content.innerHTML = `
+        } catch (error) {
+            content.innerHTML = `
                     <div class="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
                         <p class="text-red-800 mb-4">❌ Failed to generate roadmap. Please try again.</p>
                         <button onclick="closeModal()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
@@ -237,112 +252,181 @@
                         </button>
                     </div>
                 `;
-            }
         }
+    }
 
-        // Display roadmap function
-        function displayRoadmap(roadmap, months) {
-            const content = document.getElementById('roadmapContent');
+    // Display roadmap function
+    function displayRoadmap(roadmap, months) {
+        const content = document.getElementById('roadmapContent');
 
-            let html = `
-                <div class="bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg p-6 mb-6">
-                    <h3 class="text-xl font-bold text-gray-800 mb-2">🎯 Your ${months}-Month Preparation Plan</h3>
-                    <p class="text-gray-600">${roadmap.overview || 'Customized preparation plan to bridge your skill gaps and prepare for the interview.'}</p>
-                </div>
-            `;
+        let html = `
+            <div class="bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg p-6 mb-6">
+                <h3 class="text-xl font-bold text-gray-800 mb-2">🎯 Your ${months}-Month Preparation Plan</h3>
+                <p class="text-gray-600">${roadmap.overview || 'Customized preparation plan to bridge your skill gaps and prepare for the interview.'}</p>
+            </div>
+        `;
 
-            // Display phases/timeline
-            if (roadmap.phases && roadmap.phases.length > 0) {
-                roadmap.phases.forEach((phase, index) => {
-                    html += `
-                        <div class="mb-6 border-l-4 border-purple-500 pl-6">
-                            <h4 class="text-lg font-bold text-gray-800 mb-3">
+        // Display phases/timeline
+        if (roadmap.phases && roadmap.phases.length > 0) {
+            roadmap.phases.forEach((phase, index) => {
+                const borderColor = phase.difficulty_level === 'Hard' ? 'border-red-500' :
+                    phase.difficulty_level === 'Medium' ? 'border-yellow-500' :
+                    'border-green-500';
+
+                html += `
+                    <div class="mb-6 border-l-4 ${borderColor} pl-6">
+                        <div class="flex items-center gap-3 mb-3">
+                            <h4 class="text-lg font-bold text-gray-800">
                                 ${phase.phase_name || `Phase ${index + 1}`}
                                 ${phase.duration ? `<span class="text-sm text-gray-500 font-normal">(${phase.duration})</span>` : ''}
                             </h4>
+                            ${phase.difficulty_level ? `<span class="px-2 py-1 text-xs font-semibold rounded ${getDifficultyBadgeClass(phase.difficulty_level)}">${phase.difficulty_level}</span>` : ''}
+                        </div>
+                `;
+
+                // Skills section
+                if (phase.skills && phase.skills.length > 0) {
+                    html += `
+                        <div class="mb-3">
+                            <h5 class="font-semibold text-gray-700 mb-2">📚 Skills to Learn:</h5>
+                            <ul class="list-disc list-inside space-y-1">
+                                ${phase.skills.map(skill => `<li class="text-gray-600">${skill}</li>`).join('')}
+                            </ul>
+                        </div>
                     `;
+                }
 
-                    if (phase.skills && phase.skills.length > 0) {
+                // Resources section
+                if (phase.resources && phase.resources.length > 0) {
+                    html += `
+                        <div class="mb-3">
+                            <h5 class="font-semibold text-gray-700 mb-2">🔗 Recommended Resources:</h5>
+                            <ul class="list-disc list-inside space-y-1">
+                                ${phase.resources.map(resource => `<li class="text-gray-600">${resource}</li>`).join('')}
+                            </ul>
+                        </div>
+                    `;
+                }
+
+                // Projects section
+                if (phase.projects && phase.projects.length > 0) {
+                    html += `
+                        <div class="mb-3">
+                            <h5 class="font-semibold text-gray-700 mb-2">💻 Projects to Build:</h5>
+                            <ul class="list-disc list-inside space-y-1">
+                                ${phase.projects.map(project => `<li class="text-gray-600">${project}</li>`).join('')}
+                            </ul>
+                        </div>
+                    `;
+                }
+
+                // Milestones section
+                if (phase.milestones && phase.milestones.length > 0) {
+                    html += `
+                        <div class="mb-3">
+                            <h5 class="font-semibold text-gray-700 mb-2">🎯 Milestones:</h5>
+                            <ul class="list-disc list-inside space-y-1">
+                                ${phase.milestones.map(milestone => `<li class="text-gray-600">${milestone}</li>`).join('')}
+                            </ul>
+                        </div>
+                    `;
+                }
+
+                // Interview Questions Section
+                if (phase.interview_questions && phase.interview_questions.length > 0) {
+                    html += `
+                        <div class="mb-3 bg-indigo-50 rounded-lg p-4 border border-indigo-200">
+                            <h5 class="font-semibold text-indigo-800 mb-3 flex items-center gap-2">
+                                <span>❓ Technical Interview Questions</span>
+                                <span class="text-xs font-normal text-indigo-600">(Practice these to master this phase)</span>
+                            </h5>
+                            <div class="space-y-3">
+                    `;
+                    
+                    phase.interview_questions.forEach((q, qIndex) => {
+                        const difficultyBadge = getDifficultyBadgeClass(q.difficulty);
                         html += `
-                            <div class="mb-3">
-                                <h5 class="font-semibold text-gray-700 mb-2">📚 Skills to Learn:</h5>
-                                <ul class="list-disc list-inside space-y-1">
-                                    ${phase.skills.map(skill => `<li class="text-gray-600">${skill}</li>`).join('')}
-                                </ul>
+                            <div class="bg-white rounded-lg p-3 border border-indigo-100">
+                                <div class="flex items-start gap-2 mb-2">
+                                    <span class="font-semibold text-sm text-gray-700">${qIndex + 1}.</span>
+                                    <div class="flex-1">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="px-2 py-0.5 text-xs font-semibold rounded ${difficultyBadge}">${q.difficulty || 'Medium'}</span>
+                                            ${q.topic ? `<span class="text-xs text-gray-500">• ${q.topic}</span>` : ''}
+                                        </div>
+                                        <p class="text-gray-800 font-medium">${q.question}</p>
+                                        ${q.hint ? `
+                                            <details class="mt-2">
+                                                <summary class="text-xs text-indigo-600 cursor-pointer hover:text-indigo-800">💡 Show Hint</summary>
+                                                <p class="text-xs text-gray-600 mt-1 pl-4 border-l-2 border-indigo-200">${q.hint}</p>
+                                            </details>
+                                        ` : ''}
+                                    </div>
+                                </div>
                             </div>
                         `;
-                    }
+                    });
 
-                    if (phase.resources && phase.resources.length > 0) {
-                        html += `
-                            <div class="mb-3">
-                                <h5 class="font-semibold text-gray-700 mb-2">🔗 Recommended Resources:</h5>
-                                <ul class="list-disc list-inside space-y-1">
-                                    ${phase.resources.map(resource => `<li class="text-gray-600">${resource}</li>`).join('')}
-                                </ul>
+                    html += `
                             </div>
-                        `;
-                    }
+                        </div>
+                    `;
+                }
 
-                    if (phase.projects && phase.projects.length > 0) {
-                        html += `
-                            <div class="mb-3">
-                                <h5 class="font-semibold text-gray-700 mb-2">💻 Projects to Build:</h5>
-                                <ul class="list-disc list-inside space-y-1">
-                                    ${phase.projects.map(project => `<li class="text-gray-600">${project}</li>`).join('')}
-                                </ul>
-                            </div>
-                        `;
-                    }
-
-                    if (phase.milestones && phase.milestones.length > 0) {
-                        html += `
-                            <div class="mb-3">
-                                <h5 class="font-semibold text-gray-700 mb-2">🎯 Milestones:</h5>
-                                <ul class="list-disc list-inside space-y-1">
-                                    ${phase.milestones.map(milestone => `<li class="text-gray-600">${milestone}</li>`).join('')}
-                                </ul>
-                            </div>
-                        `;
-                    }
-
-                    html += `</div>`;
-                });
-            }
-
-            // Final recommendations
-            if (roadmap.final_tips) {
+                // Close the phase div
                 html += `
-                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-6 mt-6">
-                        <h4 class="font-bold text-blue-800 mb-2">💡 Final Tips:</h4>
-                        <p class="text-gray-700">${roadmap.final_tips}</p>
                     </div>
                 `;
-            }
+            });
+        }
 
+        // Final recommendations
+        if (roadmap.final_tips) {
             html += `
-                <div class="mt-6 flex justify-end">
-                    <button onclick="closeModal()" class="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition">
-                        Close
-                    </button>
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-6 mt-6">
+                    <h4 class="font-bold text-blue-800 mb-2">💡 Final Tips:</h4>
+                    <p class="text-gray-700">${roadmap.final_tips}</p>
                 </div>
             `;
-
-            content.innerHTML = html;
         }
 
-        // Close modal function
-        function closeModal() {
-            document.getElementById('roadmapModal').classList.add('hidden');
-        }
+        // Add close button
+        html += `
+            <div class="mt-6 flex justify-end">
+                <button onclick="closeModal()" class="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition">
+                    Close
+                </button>
+            </div>
+        `;
 
-        // Close modal when clicking outside
-        document.getElementById('roadmapModal').addEventListener('click', function(event) {
-            if (event.target === this) {
-                closeModal();
-            }
-        });
-    </script>
+        content.innerHTML = html;
+    }
+
+    function getDifficultyBadgeClass(difficulty) {
+        switch (difficulty) {
+            case 'Easy':
+                return 'bg-green-100 text-green-800'
+            case 'Medium':
+                return 'bg-yellow-100 text-yellow-800'
+            case 'Hard':
+                return 'bg-red-100 text-red-800'
+            default:
+                return 'bg-gray-100 text-gray-800'
+        }
+    }
+
+    // Close modal function
+    function closeModal() {
+        document.getElementById('roadmapModal').classList.add('hidden');
+    }
+
+    // Close modal when clicking outside
+    document.getElementById('roadmapModal').addEventListener('click', function (event) {
+        if (event.target === this) {
+            closeModal();
+        }
+    });
+</script>
 </body>
 </html>
 

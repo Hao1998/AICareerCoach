@@ -112,11 +112,10 @@ resume_analysis_chain = LLMChain(
     prompt=resume_prompt,
 )
 
-
 preparation_roadmap_template = """
 Role: You are an AI Career Coach creating personalized interview preparation roadmaps.
 
-Task: Given a candidate's resume, job posting details, current skill gaps, and a preparation timeline, create a detailed month-by-month preparation roadmap.
+Task: Given a candidate's resume, job posting details, current skill gaps, and a preparation timeline, create a detailed month-by-month preparation roadmap with progressive technical interview questions.
 
 Resume:
 {resume}
@@ -139,43 +138,60 @@ Create a comprehensive preparation roadmap divided into phases. For a {timeline_
 - If 9 months: Create 5-6 phases with comprehensive coverage
 
 For each phase, provide:
+
 1. Phase name and duration
 2. Specific skills to learn (related to the skill gaps)
 3. Recommended learning resources (courses, books, documentation)
 4. Hands-on projects to build (that demonstrate the required skills)
 5. Milestones to achieve
-
-Also provide an overview and final tips.
+6. **Technical interview questions** - Generate 4-6 role-specific questions that:
+   - Are relevant to the skills being learned in this phase
+   - Progress in difficulty from phase to phase (Easy → Medium → Hard)
+   - Mix conceptual understanding, practical application, and problem-solving
+   - Are realistic questions for this specific role ({job_title})
+   - Include the difficulty level and topic area
+Also provide an overview and final tips for interview success.
 Provide your roadmap in the following JSON format:
 {{
-    "overview": "Brief overview of the preparation plan",
+    "overview": "Brief overview of the preparation plan and interview strategy",
     "phases": [
         {{
             "phase_name": "Phase name (e.g., 'Foundation Building')",
             "duration": "Time period (e.g., 'Month 1-2' or 'Weeks 1-4')",
+            "difficulty_level": "Easy|Medium|Hard",
             "skills": ["skill1", "skill2", "skill3"],
             "resources": ["resource1 with description", "resource2 with description"],
             "projects": ["project1 description", "project2 description"],
-            "milestones": ["milestone1", "milestone2"]
+            "milestones": ["milestone1", "milestone2"],
+            "interview_questions": [
+                {{
+                    "question": "The technical interview question",
+                    "difficulty": "Easy|Medium|Hard",
+                    "topic": "Topic area (e.g., 'Data Structures', 'System Design', 'API Design')",
+                    "hint": "Brief hint or approach to tackle this question"
+                }}
+            ]
         }}
     ],
-    "final_tips": "Important advice for success"
+    "final_tips": "Important advice for interview success, including behavioral tips and common pitfalls to avoid"
 }}
 Make sure the roadmap is:
-- Specific to the skill gaps identified
+- Specific to the skill gaps and target role identified
 - Realistic for the given timeline
 - Actionable with concrete steps
 - Progressive from foundational to advanced topics
+- Interview questions progress in difficulty and relevance across phases
+- Questions reflect real interview scenarios for {job_title} positions
 """
 preparation_roadmap_prompt = PromptTemplate(
-    input_variables=["resume", "job_title", "company", "job_description", "job_requirements", "skill_gaps", "timeline_months"],
+    input_variables=["resume", "job_title", "company", "job_description", "job_requirements", "skill_gaps",
+                     "timeline_months"],
     template=preparation_roadmap_template,
 )
 preparation_roadmap_chain = LLMChain(
     llm=llm,
     prompt=preparation_roadmap_prompt,
 )
-
 
 # Job matching prompt template
 job_matching_template = """
@@ -214,6 +230,7 @@ job_matching_chain = LLMChain(
     llm=llm,
     prompt=job_matching_prompt,
 )
+
 
 def calculate_embedding_similarity(resume_embedding, job_embedding):
     """Calculate cosine similarity between resume and job embeddings"""
@@ -754,7 +771,6 @@ def get_matches_api(filename):
     """API endpoint to get matches for a resume"""
     matches = JobMatch.query.filter_by(resume_filename=filename).order_by(JobMatch.match_score.desc()).all()
     return jsonify([match.to_dict() for match in matches])
-
 
 
 if __name__ == "__main__":
