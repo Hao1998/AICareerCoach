@@ -254,12 +254,20 @@
             // Display phases/timeline
             if (roadmap.phases && roadmap.phases.length > 0) {
                 roadmap.phases.forEach((phase, index) => {
+                    // Determine border color based on difficulty
+                    const borderColor = phase.difficulty_level === 'Hard' ? 'border-red-500' :
+                                       phase.difficulty_level === 'Medium' ? 'border-yellow-500' :
+                                       'border-green-500';
+
                     html += `
-                        <div class="mb-6 border-l-4 border-purple-500 pl-6">
-                            <h4 class="text-lg font-bold text-gray-800 mb-3">
-                                ${phase.phase_name || `Phase ${index + 1}`}
-                                ${phase.duration ? `<span class="text-sm text-gray-500 font-normal">(${phase.duration})</span>` : ''}
-                            </h4>
+                        <div class="mb-6 border-l-4 ${borderColor} pl-6">
+                            <div class="flex items-center gap-3 mb-3">
+                                <h4 class="text-lg font-bold text-gray-800">
+                                    ${phase.phase_name || `Phase ${index + 1}`}
+                                    ${phase.duration ? `<span class="text-sm text-gray-500 font-normal">(${phase.duration})</span>` : ''}
+                                </h4>
+                                ${phase.difficulty_level ? `<span class="px-2 py-1 text-xs font-semibold rounded ${getDifficultyBadgeClass(phase.difficulty_level)}">${phase.difficulty_level}</span>` : ''}
+                            </div>
                     `;
 
                     if (phase.skills && phase.skills.length > 0) {
@@ -306,8 +314,63 @@
                         `;
                     }
 
+                    // Interview Questions Section
+                    if (phase.interview_questions && phase.interview_questions.length > 0) {
+                        html += `
+                            <div class="mb-3 bg-indigo-50 rounded-lg p-4 border border-indigo-200">
+                                <h5 class="font-semibold text-indigo-800 mb-3 flex items-center gap-2">
+                                    <span>❓ Technical Interview Questions</span>
+                                    <span class="text-xs font-normal text-indigo-600">(Practice these to master this phase)</span>
+                                </h5>
+                                <div class="space-y-3">
+                        `;
+
+                        phase.interview_questions.forEach((q, qIndex) => {
+                            const difficultyBadge = getDifficultyBadgeClass(q.difficulty);
+                            html += `
+                                <div class="bg-white rounded-lg p-3 border border-indigo-100">
+                                    <div class="flex items-start gap-2 mb-2">
+                                        <span class="font-semibold text-sm text-gray-700">${qIndex + 1}.</span>
+                                        <div class="flex-1">
+                                            <div class="flex items-center gap-2 mb-1">
+                                                <span class="px-2 py-0.5 text-xs font-semibold rounded ${difficultyBadge}">${q.difficulty || 'Medium'}</span>
+                                                ${q.topic ? `<span class="text-xs text-gray-500">• ${q.topic}</span>` : ''}
+                                            </div>
+                                            <p class="text-gray-800 font-medium">${q.question}</p>
+                                            ${q.hint ? `
+                                                <details class="mt-2">
+                                                    <summary class="text-xs text-indigo-600 cursor-pointer hover:text-indigo-800">💡 Show Hint</summary>
+                                                    <p class="text-xs text-gray-600 mt-1 pl-4 border-l-2 border-indigo-200">${q.hint}</p>
+                                                </details>
+                                            ` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+
+                        html += `
+                                </div>
+                            </div>
+                        `;
+                    }
+
                     html += `</div>`;
                 });
+            }
+
+            // Helper function for difficulty badge classes
+            function getDifficultyBadgeClass(difficulty) {
+                switch(difficulty) {
+                    case 'Easy':
+                        return 'bg-green-100 text-green-800';
+                    case 'Medium':
+                        return 'bg-yellow-100 text-yellow-800';
+                    case 'Hard':
+                        return 'bg-red-100 text-red-800';
+                    default:
+                        return 'bg-gray-100 text-gray-800';
+                }
             }
 
             // Final recommendations
