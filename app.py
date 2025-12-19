@@ -215,7 +215,6 @@ job_matching_chain = LLMChain(
     prompt=job_matching_prompt,
 )
 
-
 def calculate_embedding_similarity(resume_embedding, job_embedding):
     """Calculate cosine similarity between resume and job embeddings"""
     similarity = np.dot(resume_embedding, job_embedding) / (
@@ -755,6 +754,7 @@ def get_matches_api(filename):
     """API endpoint to get matches for a resume"""
     matches = JobMatch.query.filter_by(resume_filename=filename).order_by(JobMatch.match_score.desc()).all()
     return jsonify([match.to_dict() for match in matches])
+
 
 
 if __name__ == "__main__":
