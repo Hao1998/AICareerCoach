@@ -130,6 +130,10 @@ class JobMatch(db.Model):
     """Model for storing CV-Job match results"""
     __tablename__ = 'job_matches'
 
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    resume_id = db.Column(db.Integer, db.ForeignKey('resumes.id'), nullable=False, index=True)
+    resume_filename = db.Column(db.String(200), nullable=False)  # Keep for backward compatibility
     id = db.Column(db.Integer, primary_key=True)   user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     resume_id = db.Column(db.Integer, db.ForeignKey('resumes.id'), nullable=False, index=True)
     resume_filename = db.Column(db.String(200), nullable=False)  # Keep for backward compatibility

@@ -1,5 +1,5 @@
 Flask
-Flask-login
+Flask-Login
 Flask-WTF
 email-validator
 langchain>=0.3.0
