@@ -33,7 +33,35 @@ def migrate_database():
     print("=" * 60)
 
     with app.app_context():
-        print("\n1. Creating new database tables...")
+        print("\n1. Checking database schema...")
+
+        # Check if we need to migrate an existing database
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        existing_tables = inspector.get_table_names()
+
+        needs_migration = False
+        if 'job_matches' in existing_tables:
+            # Check if old schema (no user_id column)
+            columns = [col['name'] for col in inspector.get_columns('job_matches')]
+            if 'user_id' not in columns:
+                needs_migration = True
+                print("   ℹ Found existing database with old schema")
+                print("   ℹ Migration required to add multi-user support")
+
+        if needs_migration:
+            print("\n2. Adding new columns to existing tables...")
+            # Add new columns to job_matches table
+            try:
+                with db.engine.connect() as conn:
+                    conn.execute(text('ALTER TABLE job_matches ADD COLUMN user_id INTEGER'))
+                    conn.execute(text('ALTER TABLE job_matches ADD COLUMN resume_id INTEGER'))
+                    conn.commit()
+                print("   ✓ Added user_id and resume_id columns to job_matches")
+            except Exception as e:
+                print(f"   ⚠ Warning: Could not add columns (they may already exist): {e}")
+
+        print("\n3. Creating new database tables...")
         db.create_all()
         print("   ✓ Tables created successfully")
 
@@ -45,7 +73,7 @@ def migrate_database():
             print("   If you want to start fresh, delete career_coach.db and run again.")
             return
 
-        print("\n2. Creating default admin user...")
+        print("\n4. Creating default admin user...")
         # Create a default admin user
         admin = User(
             username='admin',
@@ -60,7 +88,7 @@ def migrate_database():
         print(f"     Password: admin123")
         print(f"     ⚠ PLEASE CHANGE THIS PASSWORD AFTER FIRST LOGIN!")
 
-        print("\n3. Migrating existing data...")
+        print("\n5. Migrating existing data...")
 
         # Check if there are any existing job matches without user_id
         old_matches = JobMatch.query.filter_by(user_id=None).all()
