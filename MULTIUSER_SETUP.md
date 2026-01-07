@@ -58,9 +58,11 @@ New dependencies added:
 # Backup existing database (optional but recommended)
 cp career_coach.db career_coach.db.backup
 
-# Run migration script
-python migrate_to_multiuser.py
+# Run migration script (standalone version - no heavy dependencies needed)
+python migrate_standalone.py
 ```
+
+**Note:** Use `migrate_standalone.py` instead of `migrate_to_multiuser.py` to avoid installing langchain dependencies just for migration.
 
 The migration script will:
 1. Create new tables (`users`, `resumes`)
@@ -175,6 +177,11 @@ jobs = current_user.job_matches.all()
 
 ## Troubleshooting
 
+### "module 'hashlib' has no attribute 'scrypt'"
+- **Fixed!** Use `migrate_standalone.py` which uses `pbkdf2:sha256` instead
+- This error occurred with older Python versions or limited OpenSSL builds
+- Our code now uses a more compatible hashing algorithm
+
 ### "Please log in to access this page"
 - You're not authenticated
 - Go to `/login` to sign in
@@ -187,6 +194,7 @@ jobs = current_user.job_matches.all()
 - Check that `career_coach.db` exists
 - Ensure you have write permissions
 - Check for Python errors in terminal
+- Use `migrate_standalone.py` (lighter dependencies)
 
 ### Sessions not persisting
 - Set `SECRET_KEY` environment variable for production
