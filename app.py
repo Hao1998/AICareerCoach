@@ -44,10 +44,24 @@ def perform_qa(query):
 
 app = Flask(__name__)
 
+# Security configuration
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+
+
+
 # Database configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///career_coach.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
+
+
+
+# Flask-Login configuration
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = 'Please log in to access this page.'
+login_manager.login_message_category = 'info'
 
 # File upload configuration
 UPLOAD_FOLDER = 'uploads'
@@ -379,6 +393,10 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         print("Falling back to old matching method")
         return find_matching_jobs_old(resume_text, top_k)
 
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
 @app.route('/')
 def index():

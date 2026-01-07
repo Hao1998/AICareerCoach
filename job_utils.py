@@ -57,7 +57,8 @@ def build_job_faiss_index():
     vectorstore = FAISS.from_embeddings(
         text_embeddings=list(zip(job_texts, job_embeddings)),
         embedding=embeddings,
-        metadatas=job_metadatas
+        metadatas=job_metadatas,
+        distance_metric="cosine"
     )
 
     # Save to disk

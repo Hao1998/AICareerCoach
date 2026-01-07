@@ -1,4 +1,7 @@
 Flask
+Flask-login
+Flask-WTF
+email-validator
 langchain>=0.3.0
 langchain-openai>=0.2.0
 langchain-community>=0.3.0
