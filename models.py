@@ -32,7 +32,7 @@ class User(UserMixin, db.Model):
 
     def set_password(self, password):
         """Hash and set password"""
-        self.password_hash = generate_password_hash(password)
+        self.password_hash = generate_password_hash(password, method='pbkdf2:sha256')
 
 
     def check_password(self, password):
@@ -132,9 +132,6 @@ class JobMatch(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    resume_id = db.Column(db.Integer, db.ForeignKey('resumes.id'), nullable=False, index=True)
-    resume_filename = db.Column(db.String(200), nullable=False)  # Keep for backward compatibility
-    id = db.Column(db.Integer, primary_key=True)   user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     resume_id = db.Column(db.Integer, db.ForeignKey('resumes.id'), nullable=False, index=True)
     resume_filename = db.Column(db.String(200), nullable=False)  # Keep for backward compatibility
     job_id = db.Column(db.Integer, db.ForeignKey('job_postings.id'), nullable=False)

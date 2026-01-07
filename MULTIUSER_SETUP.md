@@ -59,7 +59,7 @@ New dependencies added:
 cp career_coach.db career_coach.db.backup
 
 # Run migration script
-python migrate_to_multiuser.py
+python migrate_standalone.py
 ```
 
 The migration script will:
