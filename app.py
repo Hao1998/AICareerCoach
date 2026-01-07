@@ -1,7 +1,8 @@
-from flask import Flask, request, render_template, redirect, url_for, jsonify
+from flask import Flask, request, render_template, redirect, url_for, jsonify, flash
 import os
 from werkzeug.utils import secure_filename
 import PyPDF2
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain_xai import ChatXAI
@@ -12,7 +13,8 @@ from langchain.chains import RetrievalQA
 from langchain.text_splitter import CharacterTextSplitter
 
 from langchain.text_splitter import CharacterTextSplitter
-from models import db, JobPosting, JobMatch
+from models import db, JobPosting, JobMatch, User, Resume
+from forms import LoginForm, RegistrationForm
 import numpy as np
 import json
 from datetime import datetime
@@ -34,9 +36,15 @@ text_splitter = CharacterTextSplitter(
 )
 
 
-def perform_qa(query):
-    db = FAISS.load_local("vector_index", embeddings, allow_dangerous_deserialization=True)
-    retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+def perform_qa(query, user_id):
+    """Perform Q&A on user-specific resume vector index"""
+    user_vector_dir = os.path.join('vector_index', str(user_id))
+
+    if not os.path.exists(user_vector_dir):
+        return "Please upload a resume first before asking questions."
+
+    vector_db = FAISS.load_local(user_vector_dir, embeddings, allow_dangerous_deserialization=True)
+    retriever = vector_db.as_retriever(search_type="similarity", search_kwargs={"k": 4})
     rqa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
     result = rqa.invoke(query)
     return result['result']
@@ -44,10 +52,22 @@ def perform_qa(query):
 
 app = Flask(__name__)
 
+# Security configuration
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+
 # Database configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///career_coach.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
+
+
+
+# Flask-Login configuration
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = 'Please log in to access this page.'
+login_manager.login_message_category = 'info'
 
 # File upload configuration
 UPLOAD_FOLDER = 'uploads'
@@ -380,43 +400,79 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         return find_matching_jobs_old(resume_text, top_k)
 
 
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
 @app.route('/')
+@login_required
 def index():
-    return render_template('index.html')
+    return render_template('index.html', user=current_user)
 
 
 @app.route('/upload', methods=['POST'])
+@login_required
 def upload_file():
     if 'file' not in request.files:
+        flash('No file uploaded', 'error')
         return redirect(url_for('index'))
 
     file = request.files['file']
 
     if file.filename == '':
+        flash('No file selected', 'error')
         return redirect(url_for('index'))
 
     if file:
-        # Save the uploaded file
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        # Save the uploaded file in user-specific directory
+        original_filename = secure_filename(file.filename)
+        # Generate unique filename with timestamp
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        filename = f"{timestamp}_{original_filename}"
+
+        # User-specific upload directory
+        user_upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], str(current_user.id))
+        os.makedirs(user_upload_dir, exist_ok=True)
+
+        file_path = os.path.join(user_upload_dir, filename)
         file.save(file_path)
 
-        # Extracted   the  text from the PDF
+        # Create Resume record
+        resume = Resume(
+            user_id=current_user.id,
+            filename=filename,
+            original_filename=original_filename,
+            file_path=file_path
+        )
+        db.session.add(resume)
+        db.session.flush()  # Get resume.id
+
+        # Extract text from the PDF
         resume_text = extract_text_from_pdf(file_path)
         splitted_text = text_splitter.split_text(resume_text)
-        vectorstore = FAISS.from_texts(splitted_text, embeddings)
-        vectorstore.save_local("vector_index")
 
-        # print(proposal_text)
-        # Run SWOT analysis using the LLM chain
+        # User-specific vector index
+        user_vector_dir = os.path.join('vector_index', str(current_user.id))
+        os.makedirs(user_vector_dir, exist_ok=True)
+
+        vectorstore = FAISS.from_texts(splitted_text, embeddings)
+        vectorstore.save_local(user_vector_dir)
+
+        # Run resume analysis using the LLM chain
         resume_analysis = resume_analysis_chain.run(resume=resume_text)
+
+        # Save analysis to Resume record
+        resume.analysis = resume_analysis
+        db.session.commit()
 
         # Find matching jobs
         matching_jobs = find_matching_jobs(resume_text, top_k=5)
 
-        # Save matches to database
+        # Save matches to database with user_id and resume_id
         for match in matching_jobs:
             job_match = JobMatch(
+                user_id=current_user.id,
+                resume_id=resume.id,
                 resume_filename=filename,
                 job_id=match['job'].id,
                 match_score=match['analysis']['match_score'],
@@ -427,29 +483,34 @@ def upload_file():
             db.session.add(job_match)
         db.session.commit()
 
+        flash('Resume uploaded and analyzed successfully!', 'success')
         return render_template('results.html',
                                resume_analysis=resume_analysis,
                                matching_jobs=matching_jobs,
-                               filename=filename)
+                               filename=original_filename,
+                               user=current_user)
 
 
 @app.route('/ask', methods=['GET', 'POST'])
+@login_required
 def ask_query():
     if request.method == 'POST':
         query = request.form['query']
-        result = perform_qa(query)
-        return render_template('qa_results.html', query=query, result=result)
-    return render_template('ask.html')
+        result = perform_qa(query, current_user.id)
+        return render_template('qa_results.html', query=query, result=result, user=current_user)
+    return render_template('ask.html', user=current_user)
 
 
 @app.route('/jobs')
+@login_required
 def list_jobs():
     """Display all active job postings"""
     jobs = JobPosting.query.filter_by(is_active=True).order_by(JobPosting.posted_date.desc()).all()
-    return render_template('jobs.html', jobs=jobs)
+    return render_template('jobs.html', jobs=jobs, user=current_user)
 
 
 @app.route('/jobs/fetch', methods=['GET', 'POST'])
+@login_required
 def fetch_jobs():
     """Fetch jobs from Adzuna API"""
     if request.method == 'POST':
@@ -497,6 +558,7 @@ def fetch_jobs():
 
 
 @app.route('/api/jobs/fetch', methods=['POST'])
+@login_required
 def fetch_jobs_api():
     """API endpoint to fetch jobs from Adzuna"""
     try:
@@ -541,10 +603,12 @@ def fetch_jobs_api():
 
 
 @app.route('/check-resume-status', methods=['GET'])
+@login_required
 def check_resume_status():
     """Check if user has already uploaded a resume (vector index exists)"""
     try:
-        if os.path.exists("vector_index"):
+        user_vector_dir = os.path.join('vector_index', str(current_user.id))
+        if os.path.exists(user_vector_dir):
             return jsonify({"hasResume": True})
         else:
             return jsonify({"hasResume": False})
@@ -553,6 +617,7 @@ def check_resume_status():
 
 
 @app.route('/api/prepare-roadmap', methods=['POST'])
+@login_required
 def prepare_roadmap():
     """Generate a preparation roadmap for a specific job"""
     try:
@@ -571,27 +636,20 @@ def prepare_roadmap():
                 "success": False,
                 "error": "Job not found"
             }), 404
-        # Get the latest resume
-        upload_folder = app.config['UPLOAD_FOLDER']
-        if not os.path.exists(upload_folder):
+        # Get the latest resume for current user
+        latest_resume = current_user.resumes.filter_by(is_active=True).order_by(Resume.uploaded_at.desc()).first()
+        if not latest_resume:
             return jsonify({
                 "success": False,
                 "error": "No resume uploaded"
             }), 400
-        files = [f for f in os.listdir(upload_folder) if f.endswith('.pdf')]
-        if not files:
-            return jsonify({
-                "success": False,
-                "error": "No resume found"
-            }), 400
-        # Get the most recent resume file
-        latest_file = max(files, key=lambda f: os.path.getctime(os.path.join(upload_folder, f)))
-        resume_path = os.path.join(upload_folder, latest_file)
+
         # Extract resume text
-        resume_text = extract_text_from_pdf(resume_path)
+        resume_text = extract_text_from_pdf(latest_resume.file_path)
         # Get or create job match to find skill gaps
         job_match = JobMatch.query.filter_by(
-            resume_filename=latest_file,
+            user_id=current_user.id,
+            resume_id=latest_resume.id,
             job_id=job_id
         ).first()
         skill_gaps = []
@@ -644,6 +702,7 @@ def prepare_roadmap():
 
 
 @app.route('/jobs/add', methods=['GET', 'POST'])
+@login_required
 def add_job():
     """Add a new job posting"""
     if request.method == 'POST':
@@ -669,51 +728,50 @@ def add_job():
         except Exception as e:
             print(f"Warning: Failed to rebuild job index: {e}")
 
+        flash('Job posted successfully!', 'success')
         return redirect(url_for('list_jobs'))
-    return render_template('add_job.html')
+    return render_template('add_job.html', user=current_user)
 
 
 @app.route('/jobs/<int:job_id>')
+@login_required
 def view_job(job_id):
     """View a specific job posting"""
     job = JobPosting.query.get_or_404(job_id)
-    return render_template('view_job.html', job=job)
+    return render_template('view_job.html', job=job, user=current_user)
 
 
 @app.route('/find-matching-jobs', methods=['POST'])
+@login_required
 def find_matching_jobs_endpoint():
     """Find matching jobs using the latest uploaded resume"""
     try:
-        # Check if vector index exists
-        if not os.path.exists("vector_index"):
+        # Get latest resume for current user
+        latest_resume = current_user.resumes.filter_by(is_active=True).order_by(Resume.uploaded_at.desc()).first()
+
+        if not latest_resume:
             return jsonify({"error": "No resume found. Please upload your resume first."}), 400
 
-        # Load the vector store to get the resume content
-        db = FAISS.load_local("vector_index", embeddings, allow_dangerous_deserialization=True)
-
-        latest_resume_file = max(
-            [os.path.join(app.config['UPLOAD_FOLDER'], f) for f in os.listdir(app.config['UPLOAD_FOLDER'])],
-            key=os.path.getctime
-        )
-        resume_text = extract_text_from_pdf(latest_resume_file)
+        resume_text = extract_text_from_pdf(latest_resume.file_path)
 
         resume_analysis = resume_analysis_chain.run(resume=resume_text)
 
         matching_jobs = find_matching_jobs(resume_text, top_k=5)
 
-        filename = os.path.basename(latest_resume_file)
         # Store the results in session or temporary storage
         # For now, we'll return success and redirect to results page
         return render_template('results.html',
                                resume_analysis=resume_analysis,
                                matching_jobs=matching_jobs,
-                               filename=filename)
+                               filename=latest_resume.original_filename,
+                               user=current_user)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route('/jobs/rebuild-index', methods=['POST'])
+@login_required
 def rebuild_job_index():
     """Rebuild FAISS index for all job embeddings (admin endpoint)"""
     try:
@@ -744,6 +802,7 @@ def rebuild_job_index():
 
 
 @app.route('/jobs/<int:job_id>/delete', methods=['POST'])
+@login_required
 def delete_job(job_id):
     """Deactivate a job posting"""
     job = JobPosting.query.get_or_404(job_id)
@@ -756,20 +815,25 @@ def delete_job(job_id):
     except Exception as e:
         print(f"Warning: Failed to rebuild job index after deletion: {e}")
 
+    flash('Job deactivated successfully', 'success')
     return redirect(url_for('list_jobs'))
 
 
 @app.route('/api/jobs', methods=['GET'])
+@login_required
 def get_jobs_api():
     """API endpoint to get all jobs"""
     jobs = JobPosting.query.filter_by(is_active=True).all()
     return jsonify([job.to_dict() for job in jobs])
 
 
-@app.route('/api/matches/<filename>')
-def get_matches_api(filename):
+@app.route('/api/matches/<int:resume_id>')
+@login_required
+def get_matches_api(resume_id):
     """API endpoint to get matches for a resume"""
-    matches = JobMatch.query.filter_by(resume_filename=filename).order_by(JobMatch.match_score.desc()).all()
+    # Ensure the resume belongs to current user
+    resume = Resume.query.filter_by(id=resume_id, user_id=current_user.id).first_or_404()
+    matches = JobMatch.query.filter_by(resume_id=resume_id, user_id=current_user.id).order_by(JobMatch.match_score.desc()).all()
     return jsonify([match.to_dict() for match in matches])
 
 
