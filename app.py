@@ -917,7 +917,6 @@ def get_jobs_api():
     jobs = JobPosting.query.filter_by(is_active=True).all()
     return jsonify([job.to_dict() for job in jobs])
 
-
 @app.route('/api/matches/<int:resume_id>')
 @login_required
 def get_matches_api(resume_id):
