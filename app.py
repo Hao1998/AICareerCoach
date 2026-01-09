@@ -928,6 +928,72 @@ def get_matches_api(resume_id):
     return jsonify([match.to_dict() for match in matches])
 
 
+@app.route('/api/jobs/<int:job_id>/match', methods=['POST'])
+@login_required
+def check_job_match(job_id):
+    """API endpoint to check if user's CV matches a specific job"""
+    try:
+        # Get the job
+        job = JobPosting.query.get(job_id)
+        if not job or not job.is_active:
+            return jsonify({"error": "Job not found or is no longer active"}), 404
+
+
+        # Get latest resume for current user
+        latest_resume = current_user.resumes.filter_by(is_active=True).order_by(Resume.uploaded_at.desc()).first()
+        if not latest_resume:
+            return jsonify({"error": "No resume found. Please upload your resume first."}), 400
+
+        # Extract text from the resume
+        resume_text = extract_text_from_pdf(latest_resume.file_path)
+
+
+        # Get detailed LLM analysis
+        try:
+            analysis_result = job_matching_chain.run(
+                resume=resume_text[:3000],
+                job_title=job.title,
+                company=job.company,
+                job_description=job.description[:1000],
+                job_requirements=job.requirements[:1000] if job.requirements else "Not specified"
+            )
+            analysis = json.loads(analysis_result)
+            # Store the match result in the database for future reference
+            existing_match = JobMatch.query.filter_by(
+                user_id=current_user.id,
+                resume_id=latest_resume.id,
+                job_id=job.id
+            ).first()
+            if existing_match:
+                # Update existing match
+                existing_match.match_score = analysis.get('match_score', 0)
+                existing_match.matched_skills = json.dumps(analysis.get('matched_skills', []))
+                existing_match.gaps = json.dumps(analysis.get('skill_gaps', []))
+                existing_match.recommendation = analysis.get('recommendation', '')
+            else:
+                # Create new match record
+                job_match = JobMatch(
+                    user_id=current_user.id,
+                    resume_id=latest_resume.id,
+                    job_id=job.id,
+                    match_score=analysis.get('match_score', 0),
+                    matched_skills=json.dumps(analysis.get('matched_skills', [])),
+                    gaps=json.dumps(analysis.get('skill_gaps', [])),
+                    recommendation=analysis.get('recommendation', '')
+                )
+                db.session.add(job_match)
+            db.session.commit()
+            return jsonify(analysis)
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing failed for job {job.id}: {e}")
+            return jsonify({
+                "error": "Failed to parse analysis results. Please try again."
+            }), 500
+    except Exception as e:
+        print(f"Error in check_job_match: {e}")
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
+
 if __name__ == "__main__":
     # Build job index on startup if it doesn't exist
     try:
