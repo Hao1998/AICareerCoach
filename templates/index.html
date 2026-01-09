@@ -8,6 +8,25 @@
     <script src="https://unpkg.com/framer-motion/dist/framer-motion.js"></script>
 </head>
 <body class="min-h-screen bg-white ">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <img src="https://res.cloudinary.com/dtsuvx8dz/image/upload/v1706986565/hqatxpsjdg3zeql20jfe.png"
+                         class="h-8 mr-3" alt="AI Career Coach"/>
+                    <span class="text-xl font-bold text-blue-600">AI Career Coach</span>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="{{ url_for('index') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
+                    <a href="{{ url_for('jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
+                    <a href="{{ url_for('profile') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
+                    <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
 <main class=" max-w-7xl mx-auto min-h-screen flex  items-center  ">
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 p-4 lg:p-8">
         <!-- Left Content -->
