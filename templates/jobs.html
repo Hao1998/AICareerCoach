@@ -171,7 +171,7 @@
             `;
 
             // Make API call
-            fetch(\`/api/jobs/\${jobId}/match\`, {
+            fetch(`/api/jobs/${jobId}/match`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
