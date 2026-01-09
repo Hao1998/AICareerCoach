@@ -14,7 +14,7 @@ from langchain.text_splitter import CharacterTextSplitter
 
 from langchain.text_splitter import CharacterTextSplitter
 from models import db, JobPosting, JobMatch, User, Resume
-from forms import LoginForm, RegistrationForm
+from form import LoginForm, RegistrationForm
 import numpy as np
 import json
 from datetime import datetime
