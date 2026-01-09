@@ -969,11 +969,13 @@ def check_job_match(job_id):
                 existing_match.matched_skills = json.dumps(analysis.get('matched_skills', []))
                 existing_match.gaps = json.dumps(analysis.get('skill_gaps', []))
                 existing_match.recommendation = analysis.get('recommendation', '')
+                existing_match.resume_filename = latest_resume.filename
             else:
                 # Create new match record
                 job_match = JobMatch(
                     user_id=current_user.id,
                     resume_id=latest_resume.id,
+                    resume_filename=latest_resume.filename,
                     job_id=job.id,
                     match_score=analysis.get('match_score', 0),
                     matched_skills=json.dumps(analysis.get('matched_skills', [])),
