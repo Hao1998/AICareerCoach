@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Run Matches - AI Career Coach</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-gray-50">
+<!-- Navigation -->
+<nav class="bg-white shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16">
+            <div class="flex items-center">
+                <img src="https://res.cloudinary.com/dtsuvx8dz/image/upload/v1706986565/hqatxpsjdg3zeql20jfe.png"
+                     class="h-8 mr-3" alt="AI Career Coach"/>
+                <span class="text-xl font-bold text-blue-600">AI Career Coach</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <a href="{{ url_for('index') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
+                <a href="{{ url_for('list_jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
+                <a href="{{ url_for('profile') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
+                <a href="{{ url_for('agent_dashboard') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
+                <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<main class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-6">
+        <a href="{{ url_for('agent_history') }}" class="text-blue-600 hover:text-blue-700 text-sm font-medium mb-2 inline-block">
+            ← Back to History
+        </a>
+        <h1 class="text-3xl font-bold text-gray-900">Matches from Agent Run</h1>
+        <p class="mt-2 text-gray-600">
+            {{ run.run_type|title }} run on {{ run.started_at.strftime('%B %d, %Y at %I:%M %p') }}
+        </p>
+    </div>
+
+    <!-- Run Summary -->
+    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Run Summary</h2>
+        <div class="grid grid-cols-4 gap-4">
+            <div class="text-center p-4 bg-blue-50 rounded-lg">
+                <p class="text-sm text-gray-600">Jobs Fetched</p>
+                <p class="text-2xl font-bold text-blue-600">{{ run.jobs_fetched }}</p>
+            </div>
+            <div class="text-center p-4 bg-purple-50 rounded-lg">
+                <p class="text-sm text-gray-600">Jobs Analyzed</p>
+                <p class="text-2xl font-bold text-purple-600">{{ run.jobs_analyzed }}</p>
+            </div>
+            <div class="text-center p-4 bg-green-50 rounded-lg">
+                <p class="text-sm text-gray-600">Matches Found</p>
+                <p class="text-2xl font-bold text-green-600">{{ run.matches_found }}</p>
+            </div>
+            <div class="text-center p-4 bg-gray-50 rounded-lg">
+                <p class="text-sm text-gray-600">Status</p>
+                <p class="text-lg font-bold text-gray-900">{{ run.status|title }}</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Matches -->
+    <div class="bg-white rounded-lg shadow-md p-6">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Job Matches</h2>
+
+        {% if matches %}
+            <div class="space-y-6">
+                {% for match in matches %}
+                    <div class="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex-1">
+                                <h3 class="text-xl font-bold text-gray-900">{{ match.job.title }}</h3>
+                                <p class="text-gray-600">{{ match.job.company }}</p>
+                                <p class="text-sm text-gray-500 mt-1">{{ match.job.location }}</p>
+                            </div>
+                            <div class="text-right">
+                                    <span class="inline-block px-4 py-2 rounded-full text-lg font-bold
+                                        {% if match.match_score >= 80 %}bg-green-100 text-green-800
+                                        {% elif match.match_score >= 60 %}bg-yellow-100 text-yellow-800
+                                        {% else %}bg-orange-100 text-orange-800{% endif %}">
+                                        {{ "%.0f"|format(match.match_score) }}% Match
+                                    </span>
+                            </div>
+                        </div>
+
+                        <!-- Matched Skills -->
+                        {% if match.matched_skills %}
+                            <div class="mb-4">
+                                <p class="text-sm font-medium text-gray-700 mb-2">Matched Skills:</p>
+                                <div class="flex flex-wrap gap-2">
+                                    {% for skill in (match.matched_skills|from_json) %}
+                                        <span class="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">
+                                                ✓ {{ skill }}
+                                            </span>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        {% endif %}
+
+                        <!-- Skill Gaps -->
+                        {% if match.gaps %}
+                            <div class="mb-4">
+                                <p class="text-sm font-medium text-gray-700 mb-2">Skills to Develop:</p>
+                                <div class="flex flex-wrap gap-2">
+                                    {% for gap in (match.gaps|from_json) %}
+                                        <span class="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-medium">
+                                                → {{ gap }}
+                                            </span>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        {% endif %}
+
+                        <!-- Recommendation -->
+                        {% if match.recommendation %}
+                            <div class="mb-4 p-4 bg-blue-50 border-l-4 border-blue-500 rounded">
+                                <p class="text-sm font-medium text-blue-900 mb-1">AI Recommendation:</p>
+                                <p class="text-sm text-blue-800">{{ match.recommendation }}</p>
+                            </div>
+                        {% endif %}
+
+                        <!-- Job Description Preview -->
+                        <div class="mb-4">
+                            <p class="text-sm font-medium text-gray-700 mb-2">Job Description:</p>
+                            <p class="text-sm text-gray-600 line-clamp-3">{{ match.job.description[:300] }}...</p>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex gap-3 mt-4">
+                            <a href="{{ url_for('view_job', job_id=match.job.id) }}"
+                               class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-center font-medium">
+                                View Full Job Details
+                            </a>
+                            <button onclick="sendFeedback({{ match.id }}, 'interested')"
+                                    class="px-4 py-2 bg-green-100 hover:bg-green-200 text-green-800 rounded-lg font-medium">
+                                Interested
+                            </button>
+                            <button onclick="sendFeedback({{ match.id }}, 'not_interested')"
+                                    class="px-4 py-2 bg-red-100 hover:bg-red-200 text-red-800 rounded-lg font-medium">
+                                Not Interested
+                            </button>
+                        </div>
+
+                        {% if match.user_feedback %}
+                            <div class="mt-3 text-sm text-gray-600">
+                                <span class="font-medium">Your feedback:</span>
+                                <span class="px-2 py-1 bg-gray-100 rounded">{{ match.user_feedback|replace('_', ' ')|title }}</span>
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="text-center py-12">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+                </svg>
+                <p class="mt-2 text-gray-600">No matches found in this run</p>
+            </div>
+        {% endif %}
+    </div>
+</main>
+
+<script>
+    async function sendFeedback(matchId, feedback) {
+        try {
+            const response = await fetch(`/agent/feedback/${matchId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ feedback: feedback })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                alert('Thank you for your feedback!');
+                location.reload();
+            } else {
+                alert(`Error: ${data.error}`);
+            }
+        } catch (error) {
+            alert(`Error: ${error.message}`);
+        }
+    }
+</script>
+</body>
+</html>
