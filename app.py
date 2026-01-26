@@ -13,8 +13,10 @@ from langchain.chains import RetrievalQA
 from langchain.text_splitter import CharacterTextSplitter
 
 from langchain.text_splitter import CharacterTextSplitter
-from models import db, JobPosting, JobMatch, User, Resume
+from models import db, JobPosting, JobMatch, User, Resume, AgentConfig, AgentRunHistory
 from form import LoginForm, RegistrationForm
+from job_scout_agent import JobScoutAgent
+from agent_scheduler import init_scheduler
 import numpy as np
 import json
 from datetime import datetime
@@ -82,6 +84,20 @@ if not os.path.exists(JOB_VECTOR_INDEX):
 # Create database tables
 with app.app_context():
     db.create_all()
+
+# Initialize Job Scout Agent Scheduler
+agent_scheduler = init_scheduler(app, JobScoutAgent)
+
+# Custom Jinja2 filters
+@app.template_filter('from_json')
+def from_json_filter(value):
+    """Convert JSON string to Python object"""
+    if value:
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return []
 
 
 def extract_text_from_pdf(pdf_path):
@@ -991,6 +1007,219 @@ def check_job_match(job_id):
     except Exception as e:
         print(f"Error in check_job_match: {e}")
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
+
+
+# ==================== AGENT ROUTES ====================
+
+@app.route('/agent/dashboard')
+@login_required
+def agent_dashboard():
+    """Agent dashboard showing status, history, and results"""
+    # Get or create agent config
+    config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+    if not config:
+        config = AgentConfig(user_id=current_user.id)
+        db.session.add(config)
+        db.session.commit()
+
+    # Get recent run history (last 10 runs)
+    recent_runs = AgentRunHistory.query.filter_by(
+        user_id=current_user.id
+    ).order_by(AgentRunHistory.started_at.desc()).limit(10).all()
+
+    # Get recent agent-generated matches
+    recent_matches = JobMatch.query.filter_by(
+        user_id=current_user.id,
+        agent_generated=True
+    ).order_by(JobMatch.created_at.desc()).limit(10).all()
+
+    # Get scheduler status
+    next_run = agent_scheduler.get_next_run_time()
+
+    return render_template('agent_dashboard.html',
+                         config=config,
+                         recent_runs=recent_runs,
+                         recent_matches=recent_matches,
+                         next_run=next_run,
+                         user=current_user)
+
+
+@app.route('/agent/trigger', methods=['POST'])
+@login_required
+def trigger_agent():
+    """Manually trigger agent run for current user"""
+    try:
+        # Check if user has a resume
+        latest_resume = current_user.resumes.filter_by(is_active=True).first()
+        if not latest_resume:
+            return jsonify({
+                'success': False,
+                'error': 'Please upload a resume first before running the Job Scout Agent'
+            }), 400
+
+        # Trigger agent run
+        result = agent_scheduler.trigger_manual_run(current_user.id)
+
+        if result['status'] == 'success':
+            return jsonify({
+                'success': True,
+                'message': f"Agent run completed! Found {result['matches_found']} new matches.",
+                'jobs_fetched': result['jobs_fetched'],
+                'jobs_analyzed': result['jobs_analyzed'],
+                'matches_found': result['matches_found']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Agent run failed')
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/agent/config', methods=['GET', 'POST'])
+@login_required
+def agent_config():
+    """View and update agent configuration"""
+    config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+    if not config:
+        config = AgentConfig(user_id=current_user.id)
+        db.session.add(config)
+        db.session.commit()
+
+    if request.method == 'POST':
+        try:
+            data = request.get_json() if request.is_json else request.form
+
+            # Update configuration
+            config.is_enabled = data.get('is_enabled', 'true').lower() in ['true', '1', 'on']
+            config.schedule_time = data.get('schedule_time', config.schedule_time)
+            config.match_threshold = float(data.get('match_threshold', config.match_threshold))
+            config.max_results_per_run = int(data.get('max_results_per_run', config.max_results_per_run))
+
+            db.session.commit()
+
+            # Update scheduler if time changed
+            hour, minute = config.schedule_time.split(':')
+            agent_scheduler.update_schedule(int(hour), int(minute))
+
+            if request.is_json:
+                return jsonify({
+                    'success': True,
+                    'message': 'Configuration updated successfully',
+                    'config': config.to_dict()
+                })
+            else:
+                flash('Agent configuration updated successfully', 'success')
+                return redirect(url_for('agent_dashboard'))
+
+        except Exception as e:
+            if request.is_json:
+                return jsonify({'success': False, 'error': str(e)}), 500
+            else:
+                flash(f'Error updating configuration: {str(e)}', 'error')
+                return redirect(url_for('agent_dashboard'))
+
+    return render_template('agent_config.html', config=config, user=current_user)
+
+
+@app.route('/agent/history')
+@login_required
+def agent_history():
+    """View full agent run history"""
+    page = request.args.get('page', 1, type=int)
+    per_page = 20
+
+    runs = AgentRunHistory.query.filter_by(
+        user_id=current_user.id
+    ).order_by(AgentRunHistory.started_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+
+    return render_template('agent_history.html', runs=runs, user=current_user)
+
+
+@app.route('/agent/matches/<int:run_id>')
+@login_required
+def agent_run_matches(run_id):
+    """View matches from a specific agent run"""
+    run = AgentRunHistory.query.filter_by(
+        id=run_id,
+        user_id=current_user.id
+    ).first_or_404()
+
+    matches = JobMatch.query.filter_by(
+        agent_run_id=run_id,
+        user_id=current_user.id
+    ).order_by(JobMatch.match_score.desc()).all()
+
+    return render_template('agent_run_matches.html', run=run, matches=matches, user=current_user)
+
+
+@app.route('/agent/feedback/<int:match_id>', methods=['POST'])
+@login_required
+def agent_match_feedback(match_id):
+    """Record user feedback on an agent-generated match"""
+    try:
+        match = JobMatch.query.filter_by(
+            id=match_id,
+            user_id=current_user.id
+        ).first_or_404()
+
+        data = request.get_json() if request.is_json else request.form
+        feedback = data.get('feedback')  # 'interested', 'not_interested', 'applied'
+
+        if feedback not in ['interested', 'not_interested', 'applied']:
+            return jsonify({'success': False, 'error': 'Invalid feedback value'}), 400
+
+        match.user_feedback = feedback
+        match.feedback_at = datetime.utcnow()
+        db.session.commit()
+
+        if request.is_json:
+            return jsonify({
+                'success': True,
+                'message': 'Feedback recorded successfully'
+            })
+        else:
+            flash('Thank you for your feedback!', 'success')
+            return redirect(url_for('agent_dashboard'))
+
+    except Exception as e:
+        if request.is_json:
+            return jsonify({'success': False, 'error': str(e)}), 500
+        else:
+            flash(f'Error recording feedback: {str(e)}', 'error')
+            return redirect(url_for('agent_dashboard'))
+
+
+@app.route('/agent/status')
+@login_required
+def agent_status():
+    """API endpoint to get agent status"""
+    config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+    if not config:
+        config = AgentConfig(user_id=current_user.id)
+        db.session.add(config)
+        db.session.commit()
+
+    latest_run = AgentRunHistory.query.filter_by(
+        user_id=current_user.id
+    ).order_by(AgentRunHistory.started_at.desc()).first()
+
+    next_run = agent_scheduler.get_next_run_time()
+
+    return jsonify({
+        'is_enabled': config.is_enabled,
+        'last_run': latest_run.to_dict() if latest_run else None,
+        'next_run': next_run.isoformat() if next_run else None,
+        'scheduler_running': agent_scheduler.is_running()
+    })
 
 
 if __name__ == "__main__":

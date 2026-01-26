@@ -141,6 +141,12 @@ class JobMatch(db.Model):
     recommendation = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # Agent-related fields
+    agent_generated = db.Column(db.Boolean, default=False)  # Whether found by agent
+    agent_run_id = db.Column(db.Integer, db.ForeignKey('agent_run_history.id'), nullable=True)
+    user_feedback = db.Column(db.String(50))  # 'interested', 'not_interested', 'applied', etc.
+    feedback_at = db.Column(db.DateTime)
+
     job = db.relationship('JobPosting', backref='matches')
 
     def to_dict(self):
@@ -153,7 +159,84 @@ class JobMatch(db.Model):
             'gaps': json.loads(self.gaps) if self.gaps else [],
             'recommendation': self.recommendation,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'agent_generated': self.agent_generated,
+            'user_feedback': self.user_feedback,
             'job': self.job.to_dict() if self.job else None
         }
+
+
+class AgentConfig(db.Model):
+    """Model for storing user's Job Scout Agent configuration"""
+    __tablename__ = 'agent_configs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True, index=True)
+    is_enabled = db.Column(db.Boolean, default=True)
+    schedule_time = db.Column(db.String(5), default='09:00')  # HH:MM format
+    schedule_frequency = db.Column(db.String(20), default='daily')  # 'daily', 'weekly', etc.
+    match_threshold = db.Column(db.Float, default=75.0)  # Minimum match score to notify
+    max_results_per_run = db.Column(db.Integer, default=10)  # Max matches per run
+    last_run_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship
+    user = db.relationship('User', backref=db.backref('agent_config', uselist=False))
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'is_enabled': self.is_enabled,
+            'schedule_time': self.schedule_time,
+            'schedule_frequency': self.schedule_frequency,
+            'match_threshold': self.match_threshold,
+            'max_results_per_run': self.max_results_per_run,
+            'last_run_at': self.last_run_at.isoformat() if self.last_run_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+    def __repr__(self):
+        return f'<AgentConfig user_id={self.user_id} enabled={self.is_enabled}>'
+
+
+class AgentRunHistory(db.Model):
+    """Model for storing Job Scout Agent execution history"""
+    __tablename__ = 'agent_run_history'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    run_type = db.Column(db.String(20), nullable=False)  # 'scheduled' or 'manual'
+    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime)
+    status = db.Column(db.String(20), default='running')  # 'running', 'completed', 'failed'
+    jobs_fetched = db.Column(db.Integer, default=0)
+    jobs_analyzed = db.Column(db.Integer, default=0)
+    matches_found = db.Column(db.Integer, default=0)
+    error_message = db.Column(db.Text)
+    results_summary = db.Column(db.Text)  # JSON string with detailed results
+
+    # Relationships
+    user = db.relationship('User', backref='agent_runs')
+    matches = db.relationship('JobMatch', backref='agent_run', foreign_keys='JobMatch.agent_run_id')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'run_type': self.run_type,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'status': self.status,
+            'jobs_fetched': self.jobs_fetched,
+            'jobs_analyzed': self.jobs_analyzed,
+            'matches_found': self.matches_found,
+            'error_message': self.error_message,
+            'results_summary': json.loads(self.results_summary) if self.results_summary else None
+        }
+
+    def __repr__(self):
+        return f'<AgentRunHistory id={self.id} user_id={self.user_id} status={self.status}>'
 
 
