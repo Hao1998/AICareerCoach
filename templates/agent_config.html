@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Configuration - AI Career Coach</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-gray-50">
+<!-- Navigation -->
+<nav class="bg-white shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16">
+            <div class="flex items-center">
+                <img src="https://res.cloudinary.com/dtsuvx8dz/image/upload/v1706986565/hqatxpsjdg3zeql20jfe.png"
+                     class="h-8 mr-3" alt="AI Career Coach"/>
+                <span class="text-xl font-bold text-blue-600">AI Career Coach</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <a href="{{ url_for('index') }}"
+                   class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
+                <a href="{{ url_for('list_jobs') }}"
+                   class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
+                <a href="{{ url_for('profile') }}"
+                   class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
+                <a href="{{ url_for('agent_dashboard') }}"
+                   class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
+                <a href="{{ url_for('logout') }}"
+                   class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<main class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-6">
+        <a href="{{ url_for('agent_dashboard') }}"
+           class="text-blue-600 hover:text-blue-700 text-sm font-medium mb-2 inline-block">
+            ← Back to Agent Dashboard
+        </a>
+        <h1 class="text-3xl font-bold text-gray-900">Agent Configuration</h1>
+        <p class="mt-2 text-gray-600">Customize how the Job Scout Agent works for you</p>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="mb-4 p-4 rounded-lg {% if category == 'error' %}bg-red-50 text-red-800 border border-red-200{% else %}bg-green-50 text-green-800 border border-green-200{% endif %}">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <!-- Configuration Form -->
+    <div class="bg-white rounded-lg shadow-md p-6">
+        <form method="POST" action="{{ url_for('agent_config') }}" id="configForm">
+            <!-- Hidden timezone field (auto-populated by JavaScript) -->
+            <input type="hidden" name="timezone" id="timezone" value="{{ config.timezone }}">
+            <!-- Agent Status -->
+            <div class="mb-6">
+                <label class="flex items-center cursor-pointer">
+                    <div class="relative">
+                        <input type="checkbox" name="is_enabled" class="sr-only"
+                               {% if config.is_enabled %}checked{% endif %} onchange="this.form.submit()">
+                        <div class="block bg-gray-300 w-14 h-8 rounded-full"></div>
+                        <div class="dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition"></div>
+                    </div>
+                    <div class="ml-3">
+                        <span class="text-lg font-semibold text-gray-900">Enable Job Scout Agent</span>
+                        <p class="text-sm text-gray-600">Agent will run automatically at scheduled time</p>
+                    </div>
+                </label>
+            </div>
+
+            <div class="border-t border-gray-200 pt-6 space-y-6">
+                <!-- Schedule Time -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Schedule Time
+                    </label>
+                    <input type="time"
+                           name="schedule_time"
+                           value="{{ config.schedule_time }}"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <p class="mt-1 text-sm text-gray-500">
+                        Time when agent will run daily (in your local timezone: <span
+                            id="timezoneDisplay">{{ config.timezone }}</span>)
+                    </p>
+                </div>
+
+                <!-- Match Threshold -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Match Threshold: <span id="thresholdValue"
+                                               class="font-bold text-blue-600">{{ config.match_threshold }}%</span>
+                    </label>
+                    <input type="range"
+                           name="match_threshold"
+                           min="50"
+                           max="95"
+                           step="5"
+                           value="{{ config.match_threshold }}"
+                           oninput="document.getElementById('thresholdValue').textContent = this.value + '%'"
+                           class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                    <div class="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>50% (More matches)</span>
+                        <span>95% (Only best matches)</span>
+                    </div>
+                    <p class="mt-2 text-sm text-gray-600">
+                        Only notify you of jobs with match score above this threshold
+                    </p>
+                </div>
+
+                <!-- Max Results -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Maximum Results Per Run
+                    </label>
+                    <select name="max_results_per_run"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <option value="5" {% if config.max_results_per_run == 5 %}selected{% endif %}>5 matches</option>
+                        <option value="10" {% if config.max_results_per_run == 10 %}selected{% endif %}>10 matches
+                        </option>
+                        <option value="15" {% if config.max_results_per_run == 15 %}selected{% endif %}>15 matches
+                        </option>
+                        <option value="20" {% if config.max_results_per_run == 20 %}selected{% endif %}>20 matches
+                        </option>
+                    </select>
+                    <p class="mt-1 text-sm text-gray-500">Maximum number of job matches to show per agent run</p>
+                </div>
+            </div>
+
+            <!-- Save Button -->
+            <div class="mt-8 flex gap-4">
+                <button type="submit"
+                        class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition duration-200">
+                    Save Configuration
+                </button>
+                <a href="{{ url_for('agent_dashboard') }}"
+                   class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-3 px-6 rounded-lg transition duration-200 text-center">
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Info Box -->
+    <div class="mt-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+        <div class="flex">
+            <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-yellow-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"
+                     fill="currentColor">
+                    <path fill-rule="evenodd"
+                          d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                          clip-rule="evenodd"/>
+                </svg>
+            </div>
+            <div class="ml-3">
+                <h3 class="text-sm font-medium text-yellow-800">
+                    Running Locally
+                </h3>
+                <div class="mt-2 text-sm text-yellow-700">
+                    <p>Your agent will only run when your Flask application is running. For continuous operation,
+                        consider deploying to a cloud service.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<style>
+    /* Custom toggle switch styling */
+    input:checked ~ .block {
+        background-color: #3B82F6;
+    }
+
+    input:checked ~ .dot {
+        transform: translateX(100%);
+    }
+
+    .dot {
+        transition: transform 0.3s ease-in-out;
+    }
+</style>
+
+<script>
+    // Auto-detect user's timezone and populate the hidden field
+    document.addEventListener('DOMContentLoaded', function () {
+        // Get the user's timezone using Intl API
+        const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+        // Update the hidden timezone field
+        document.getElementById('timezone').value = userTimezone;
+
+        // Update the timezone display
+        document.getElementById('timezoneDisplay').textContent = userTimezone;
+    });
+</script>
+</body>
+</html>
