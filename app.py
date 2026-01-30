@@ -17,6 +17,9 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain.text_splitter import CharacterTextSplitter
 from models import db, JobPosting, JobMatch, User, Resume, AgentConfig, AgentRunHistory
 from form import LoginForm, RegistrationForm
+from job_scout_agent import JobScoutAgent
+from agent_scheduler import init_scheduler
+from form import LoginForm, RegistrationForm
 import numpy as np
 import json
 from datetime import datetime
@@ -997,54 +1000,6 @@ def check_job_match(job_id):
         print(f"Error in check_job_match: {e}")
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
-
-if __name__ == "__main__":
-    # Build job index on startup if it doesn't exist
-    try:
-        if not os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
-            print("Job index not found, building initial index...")
-            build_job_faiss_index()
-            print("Job index built successfully")
-    except Exception as e:
-        print(f"Warning: Could not build job index on startup: {e}")
-
-    app.run(host='0.0.0.0', port=5001)
-
-
-# ==================== AGENT ROUTES ====================
-
-@app.route('/agent/dashboard')
-@login_required
-def agent_dashboard():
-    """Agent dashboard showing status, history, and results"""
-    # Get or create agent config
-    config = AgentConfig.query.filter_by(user_id=current_user.id).first()
-    if not config:
-        config = AgentConfig(user_id=current_user.id)
-        db.session.add(config)
-        db.session.commit()
-
-    # Get recent run history (last 10 runs)
-    recent_runs = AgentRunHistory.query.filter_by(
-        user_id=current_user.id
-    ).order_by(AgentRunHistory.started_at.desc()).limit(10).all()
-
-    # Get recent agent-generated matches
-    recent_matches = JobMatch.query.filter_by(
-        user_id=current_user.id,
-        agent_generated=True
-    ).order_by(JobMatch.created_at.desc()).limit(10).all()
-
-    # Get scheduler status
-    next_run = agent_scheduler.get_next_run_time()
-
-    return render_template('agent_dashboard.html',
-                           config=config,
-                           recent_runs=recent_runs,
-                           recent_matches=recent_matches,
-                           next_run=next_run,
-                           user=current_user)
-
 @app.route('/agent/trigger', methods=['POST'])
 @login_required
 def trigger_agent():
@@ -1096,17 +1051,32 @@ def agent_config():
         try:
             data = request.get_json() if request.is_json else request.form
 
-            # Update configuration
-            config.is_enabled = data.get('is_enabled', 'true').lower() in ['true', '1', 'on']
-            config.schedule_time = data.get('schedule_time', config.schedule_time)
+            # Track what changed to rebuild scheduler efficiently
+            schedule_changed = False
+            enabled_changed = False
+
+            # Check for schedule time change
+            new_schedule_time = data.get('schedule_time', config.schedule_time)
+            if new_schedule_time != config.schedule_time:
+                schedule_changed = True
+                config.schedule_time = new_schedule_time
+
+            # Check for enabled status change
+            new_is_enabled = data.get('is_enabled', 'true').lower() in ['true', '1', 'on']
+            if new_is_enabled != config.is_enabled:
+                enabled_changed = True
+                config.is_enabled = new_is_enabled
+
+            # Update other configuration
             config.match_threshold = float(data.get('match_threshold', config.match_threshold))
             config.max_results_per_run = int(data.get('max_results_per_run', config.max_results_per_run))
 
             db.session.commit()
 
-            # Update scheduler if time changed
-            hour, minute = config.schedule_time.split(':')
-            agent_scheduler.update_schedule(int(hour), int(minute))
+            # Rebuild scheduler if schedule time or enabled status changed
+            if schedule_changed or enabled_changed:
+                agent_scheduler.rebuild_schedule()
+
 
             if request.is_json:
                 return jsonify({
@@ -1141,6 +1111,39 @@ def agent_history():
     )
 
     return render_template('agent_history.html', runs=runs, user=current_user)
+
+
+@app.route('/agent/dashboard')
+@login_required
+def agent_dashboard():
+    """Agent dashboard showing status, history, and results"""
+    # Get or create agent config
+    config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+    if not config:
+        config = AgentConfig(user_id=current_user.id)
+        db.session.add(config)
+        db.session.commit()
+
+    # Get recent run history (last 10 runs)
+    recent_runs = AgentRunHistory.query.filter_by(
+        user_id=current_user.id
+    ).order_by(AgentRunHistory.started_at.desc()).limit(10).all()
+
+    # Get recent agent-generated matches
+    recent_matches = JobMatch.query.filter_by(
+        user_id=current_user.id,
+        agent_generated=True
+    ).order_by(JobMatch.created_at.desc()).limit(10).all()
+
+    # Get scheduler status
+    next_run = agent_scheduler.get_next_run_time()
+
+    return render_template('agent_dashboard.html',
+                           config=config,
+                           recent_runs=recent_runs,
+                           recent_matches=recent_matches,
+                           next_run=next_run,
+                           user=current_user)
 
 
 
@@ -1229,3 +1232,21 @@ def from_json_filter(value):
         except (json.JSONDecodeError, TypeError):
             return []
     return []
+
+
+
+if __name__ == "__main__":
+    # Build job index on startup if it doesn't exist
+    try:
+        if not os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
+            print("Job index not found, building initial index...")
+            build_job_faiss_index()
+            print("Job index built successfully")
+    except Exception as e:
+        print(f"Warning: Could not build job index on startup: {e}")
+
+    app.run(host='0.0.0.0', port=5001)
+
+
+
+

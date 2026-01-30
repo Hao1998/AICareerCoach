@@ -46,7 +46,7 @@ class JobScoutAgent:
 
         self.llm = ChatXAI(
             xai_api_key=xai_api_key,
-            model="grok-beta",
+            model="grok-3",
             temperature=0.7,
         )
 
