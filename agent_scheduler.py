@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 import logging
 import os
+import pytz
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -84,34 +85,42 @@ class AgentScheduler:
         """Check if scheduler is running"""
         return self._is_running
 
-    def _run_users_at_time(self, schedule_time):
+    def _run_users_at_time(self, schedule_time, timezone_str=None):
         """
         Internal method called by scheduler for a specific time bucket
 
-        Runs the Job Scout Agent for all users scheduled at this time
+        Runs the Job Scout Agent for all users scheduled at this time and timezone
 
         Args:
             schedule_time: Time string in HH:MM format (e.g., "09:00")
+            timezone_str: Timezone string (e.g., "America/New_York"), optional for backward compatibility
         """
-        logger.info(f"Starting scheduled Job Scout Agent run for time: {schedule_time}")
+        logger.info(f"Starting scheduled Job Scout Agent run for time: {schedule_time} in {timezone_str or 'UTC'}")
 
         try:
             with self.app.app_context():
                 # Import here to avoid circular imports
                 from models import AgentConfig
 
-                # Get all enabled users with this schedule time
-                user_configs = AgentConfig.query.filter_by(
-                    is_enabled=True,
-                    schedule_time=schedule_time
-                ).all()
+                # Get all enabled users with this schedule time and timezone
+                if timezone_str:
+                    user_configs = AgentConfig.query.filter_by(
+                        is_enabled=True,
+                        schedule_time=schedule_time,
+                        timezone=timezone_str
+                    ).all()
+                else:
+                    # Backward compatibility: if no timezone provided, match users with this time
+                    user_configs = AgentConfig.query.filter_by(
+                        is_enabled=True,
+                        schedule_time=schedule_time
+                    ).all()
 
                 if not user_configs:
-                    logger.info(f"No enabled users found for schedule time {schedule_time}")
+                    logger.info(f"No enabled users found for schedule time {schedule_time} in {timezone_str or 'UTC'}")
                     return []
 
-                logger.info(f"Running agent for {len(user_configs)} users at {schedule_time}")
-
+                logger.info(f"Running agent for {len(user_configs)} users at {schedule_time} ({timezone_str or 'UTC'})")
                 # Create agent instance
                 agent = self.agent_class(self.app.app_context())
 
@@ -138,12 +147,13 @@ class AgentScheduler:
                 successful = len([r for r in results if r['result']['status'] == 'success'])
                 failed = len([r for r in results if r['result']['status'] == 'failed'])
 
-                logger.info(f"Scheduled run at {schedule_time} completed: {successful} successful, {failed} failed")
+                logger.info(
+                    f"Scheduled run at {schedule_time} ({timezone_str or 'UTC'}) completed: {successful} successful, {failed} failed")
 
                 return results
 
         except Exception as e:
-            logger.error(f"Error in scheduled agent run at {schedule_time}: {e}")
+            logger.error(f"Error in scheduled agent run at {schedule_time} ({timezone_str or 'UTC'}): {e}")
             return []
 
     def trigger_manual_run(self, user_id):
@@ -209,18 +219,19 @@ class AgentScheduler:
                     logger.debug(f"Removed old schedule job: {job.id}")
 
             # Get unique schedule times from enabled users
-            unique_times = AgentConfig.query.with_entities(AgentConfig.schedule_time) \
-                .filter(AgentConfig.is_enabled == True) \
-                .distinct() \
-                .all()
+            # Get unique schedule times and timezones from enabled users
+            unique_configs = AgentConfig.query.with_entities(
+                AgentConfig.schedule_time,
+                AgentConfig.timezone
+            ).filter(AgentConfig.is_enabled == True).distinct().all()
 
-            if not unique_times:
+            if not unique_configs:
                 logger.info("No enabled users found, no schedule jobs created")
                 return True
 
-            # Create one job per unique time bucket
+            # Create one job per unique (time, timezone) combination
             job_count = 0
-            for (schedule_time,) in unique_times:
+            for (schedule_time, timezone_str) in unique_configs:
                 try:
                     # Parse time string (HH:MM)
                     hour, minute = map(int, schedule_time.split(':'))
@@ -230,20 +241,26 @@ class AgentScheduler:
                         logger.warning(f"Invalid schedule time: {schedule_time}, skipping")
                         continue
 
-                    # Create job for this time bucket
-                    job_id = f'schedule_{schedule_time.replace(":", "")}'
+                    # Get timezone object (default to UTC if invalid)
+                    try:
+                        user_timezone = pytz.timezone(timezone_str or 'UTC')
+                    except pytz.exceptions.UnknownTimeZoneError:
+                        logger.warning(f"Unknown timezone '{timezone_str}', using UTC")
+                        user_timezone = pytz.UTC
+
+                    # Create job for this time bucket with user's timezone
+                    job_id = f'schedule_{schedule_time.replace(":", "")}_{timezone_str.replace("/", "_")}'
                     self.scheduler.add_job(
                         func=self._run_users_at_time,
-                        trigger=CronTrigger(hour=hour, minute=minute),
+                        trigger=CronTrigger(hour=hour, minute=minute, timezone=user_timezone),
                         id=job_id,
-                        name=f'Job Scout Agent - {schedule_time}',
-                        args=[schedule_time],
+                        name=f'Job Scout Agent - {schedule_time} ({timezone_str})',
+                        args=[schedule_time, timezone_str],
                         replace_existing=True
                     )
 
                     job_count += 1
-                    logger.info(f"Scheduled job for time bucket: {schedule_time}")
-
+                    logger.info(f"Scheduled job for time bucket: {schedule_time} in {timezone_str}")
                 except ValueError as e:
                     logger.error(f"Invalid time format '{schedule_time}': {e}")
                     continue
@@ -274,12 +291,12 @@ class AgentScheduler:
         return min(next_times) if next_times else None
 
     def get_job_info(self):
-        """""
+        """
         Get information about scheduled jobs with user counts per time bucket
 
-         Returns:
-             list: List of job information dictionaries including user counts
-         """
+        Returns:
+            list: List of job information dictionaries including user counts
+        """
         if not self.scheduler or not self._is_running:
             return []
 
@@ -291,20 +308,29 @@ class AgentScheduler:
                 for job in self.scheduler.get_jobs():
                     if job.id.startswith('schedule_'):
                         # Extract schedule time from job args
-                        schedule_time = job.args[0] if job.args else None
+                        schedule_time = job.args[0] if len(job.args) > 0 else None
+                        timezone_str = job.args[1] if len(job.args) > 1 else None
 
                         # Count users for this time bucket
                         user_count = 0
                         if schedule_time:
-                            user_count = AgentConfig.query.filter_by(
-                                is_enabled=True,
-                                schedule_time=schedule_time
-                            ).count()
+                            if timezone_str:
+                                user_count = AgentConfig.query.filter_by(
+                                    is_enabled=True,
+                                    schedule_time=schedule_time,
+                                    timezone=timezone_str
+                                ).count()
+                            else:
+                                user_count = AgentConfig.query.filter_by(
+                                    is_enabled=True,
+                                    schedule_time=schedule_time
+                                ).count()
 
                         jobs.append({
                             'id': job.id,
                             'name': job.name,
                             'schedule_time': schedule_time,
+                            'timezone': timezone_str,
                             'user_count': user_count,
                             'next_run_time': job.next_run_time.isoformat() if job.next_run_time else None,
                             'trigger': str(job.trigger)
@@ -316,93 +342,91 @@ class AgentScheduler:
             logger.error(f"Error getting job info: {e}")
             return []
 
+    def update_user_schedule(self, user_id, schedule_time):
+        """
+        Update schedule time for a specific user and rebuild scheduler
 
-def update_user_schedule(self, user_id, schedule_time):
-    """
-    Update schedule time for a specific user and rebuild scheduler
+        Args:
+            user_id: User ID to update
+            schedule_time: New schedule time in HH:MM format
 
-    Args:
-        user_id: User ID to update
-        schedule_time: New schedule time in HH:MM format
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not self.scheduler or not self._is_running:
+            logger.warning("Cannot update schedule: scheduler not running")
+            return False
 
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    if not self.scheduler or not self._is_running:
-        logger.warning("Cannot update schedule: scheduler not running")
-        return False
+        try:
+            with self.app.app_context():
+                from models import AgentConfig, db
 
-    try:
-        with self.app.app_context():
-            from models import AgentConfig, db
+                # Validate time format
+                hour, minute = map(int, schedule_time.split(':'))
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    logger.error(f"Invalid schedule time: {schedule_time}")
+                    return False
 
-            # Validate time format
-            hour, minute = map(int, schedule_time.split(':'))
-            if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                logger.error(f"Invalid schedule time: {schedule_time}")
-                return False
+                # Update user's schedule time in database
+                user_config = AgentConfig.query.filter_by(user_id=user_id).first()
+                if not user_config:
+                    logger.error(f"AgentConfig not found for user {user_id}")
+                    return False
 
-            # Update user's schedule time in database
-            user_config = AgentConfig.query.filter_by(user_id=user_id).first()
-            if not user_config:
-                logger.error(f"AgentConfig not found for user {user_id}")
-                return False
+                user_config.schedule_time = schedule_time
+                db.session.commit()
 
-            user_config.schedule_time = schedule_time
-            db.session.commit()
+                logger.info(f"Updated schedule for user {user_id} to {schedule_time}")
 
-            logger.info(f"Updated schedule for user {user_id} to {schedule_time}")
+                # Rebuild entire schedule to reflect changes
+                self.rebuild_schedule()
 
-            # Rebuild entire schedule to reflect changes
-            self.rebuild_schedule()
+                return True
 
-            return True
+        except ValueError as e:
+            logger.error(f"Invalid time format '{schedule_time}': {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to update schedule: {e}")
+            return False
 
-    except ValueError as e:
-        logger.error(f"Invalid time format '{schedule_time}': {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to update schedule: {e}")
-        return False
+    def toggle_user_agent(self, user_id, is_enabled):
+        """
+        Enable or disable agent for a user and rebuild scheduler
 
+        Args:
+            user_id: User ID to update
+            is_enabled: True to enable, False to disable
 
-def toggle_user_agent(self, user_id, is_enabled):
-    """
-    Enable or disable agent for a user and rebuild scheduler
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not self.scheduler or not self._is_running:
+            logger.warning("Cannot toggle agent: scheduler not running")
+            return False
 
-    Args:
-        user_id: User ID to update
-        is_enabled: True to enable, False to disable
+        try:
+            with self.app.app_context():
+                from models import AgentConfig, db
 
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    if not self.scheduler or not self._is_running:
-        logger.warning("Cannot toggle agent: scheduler not running")
-        return False
+                user_config = AgentConfig.query.filter_by(user_id=user_id).first()
+                if not user_config:
+                    logger.error(f"AgentConfig not found for user {user_id}")
+                    return False
 
-    try:
-        with self.app.app_context():
-            from models import AgentConfig, db
+                user_config.is_enabled = is_enabled
+                db.session.commit()
 
-            user_config = AgentConfig.query.filter_by(user_id=user_id).first()
-            if not user_config:
-                logger.error(f"AgentConfig not found for user {user_id}")
-                return False
+                logger.info(f"{'Enabled' if is_enabled else 'Disabled'} agent for user {user_id}")
 
-            user_config.is_enabled = is_enabled
-            db.session.commit()
+                # Rebuild schedule to add/remove user from time buckets
+                self.rebuild_schedule()
 
-            logger.info(f"{'Enabled' if is_enabled else 'Disabled'} agent for user {user_id}")
+                return True
 
-            # Rebuild schedule to add/remove user from time buckets
-            self.rebuild_schedule()
-
-            return True
-
-    except Exception as e:
-        logger.error(f"Failed to toggle agent: {e}")
-        return False
+        except Exception as e:
+            logger.error(f"Failed to toggle agent: {e}")
+            return False
 
 
 def init_scheduler(app, agent_class):

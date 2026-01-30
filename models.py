@@ -172,6 +172,7 @@ class AgentConfig(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True, index=True)
     is_enabled = db.Column(db.Boolean, default=True)
     schedule_time = db.Column(db.String(5), default='09:00')  # HH:MM format
+    timezone = db.Column(db.String(50), default='UTC')  # User's timezone (e.g., 'America/New_York')
     schedule_frequency = db.Column(db.String(20), default='daily')  # 'daily', 'weekly', etc.
     match_threshold = db.Column(db.Float, default=75.0)  # Minimum match score to notify
     max_results_per_run = db.Column(db.Integer, default=10)  # Max matches per run
@@ -188,6 +189,7 @@ class AgentConfig(db.Model):
             'user_id': self.user_id,
             'is_enabled': self.is_enabled,
             'schedule_time': self.schedule_time,
+            'timezone': self.timezone,
             'schedule_frequency': self.schedule_frequency,
             'match_threshold': self.match_threshold,
             'max_results_per_run': self.max_results_per_run,

@@ -1,4 +1,4 @@
-from crypt import methods
+
 
 from flask import Flask, request, render_template, redirect, url_for, jsonify, flash
 import os
@@ -1061,6 +1061,12 @@ def agent_config():
                 schedule_changed = True
                 config.schedule_time = new_schedule_time
 
+            # Check for timezone change
+            new_timezone = data.get('timezone', config.timezone)
+            if new_timezone != config.timezone:
+                schedule_changed = True  # Timezone change requires schedule rebuild
+                config.timezone = new_timezone
+
             # Check for enabled status change
             new_is_enabled = data.get('is_enabled', 'true').lower() in ['true', '1', 'on']
             if new_is_enabled != config.is_enabled:
@@ -1073,7 +1079,7 @@ def agent_config():
 
             db.session.commit()
 
-            # Rebuild scheduler if schedule time or enabled status changed
+            # Rebuild scheduler if schedule time, timezone, or enabled status changed
             if schedule_changed or enabled_changed:
                 agent_scheduler.rebuild_schedule()
 
