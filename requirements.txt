@@ -1,6 +1,7 @@
 Flask
 Flask-Login
 Flask-WTF
+Flask-Migrate
 email-validator
 langchain>=0.3.0
 langchain-openai>=0.2.0
@@ -12,6 +13,7 @@ sentence-transformers
 huggingface-hub
 numpy
 faiss-cpu
+scikit-learn
 Flask-SQLAlchemy
 openai
 transformers

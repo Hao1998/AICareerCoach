@@ -58,11 +58,11 @@
                                 </div>
 
                                 <p class="text-gray-900 font-semibold">
-                                    Started: {{ run.started_at.strftime('%B %d, %Y at %I:%M %p') }}
+                                    Started: {{ run.started_at|local_time(config.timezone if config else 'UTC', '%B %d, %Y at %I:%M %p') }}
                                 </p>
                                 {% if run.completed_at %}
                                     <p class="text-sm text-gray-600">
-                                        Completed: {{ run.completed_at.strftime('%B %d, %Y at %I:%M %p') }}
+                                        Completed: {{ run.completed_at|local_time(config.timezone if config else 'UTC', '%B %d, %Y at %I:%M %p') }}
                                         <span class="text-gray-400">
                                                 ({{ ((run.completed_at - run.started_at).total_seconds())|int }} seconds)
                                             </span>

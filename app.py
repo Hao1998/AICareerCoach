@@ -2,9 +2,11 @@
 
 from flask import Flask, request, render_template, redirect, url_for, jsonify, flash
 import os
+import sys
 from werkzeug.utils import secure_filename
 import PyPDF2
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask_migrate import Migrate
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain_xai import ChatXAI
@@ -30,7 +32,8 @@ from job_utils import (
     compute_job_embedding,
     compute_all_job_embeddings,
     build_job_faiss_index,
-    get_job_faiss_index
+    get_job_faiss_index,
+    update_user_preferences
 )
 
 text_splitter = CharacterTextSplitter(
@@ -65,7 +68,8 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///career_coach.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
-
+# Flask-Migrate configuration (for database migrations)
+migrate = Migrate(app, db)
 
 # Flask-Login configuration
 login_manager = LoginManager()
@@ -99,15 +103,38 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 
-xai_api_key = os.getenv("XAI_API_KEY")
-if not xai_api_key:
-    raise RuntimeError("XAI_API_KEY environment variable is not set")
+# Check if we're running a Flask command (like 'flask db migrate')
+# If so, skip API key validation to allow migrations
+RUNNING_FLASK_COMMAND = any(cmd in sys.argv[0] for cmd in ['flask', 'migrate'])
 
-llm = ChatXAI(
-    model="grok-3",
-    temperature=0,
-    api_key=os.getenv('XAI_API_KEY', xai_api_key)  # Set XAI_API_KEY env var or replace here
-)
+# Lazy LLM initialization - only create when needed
+_llm = None
+
+def get_llm():
+    """Get or create LLM instance (lazy initialization)"""
+    global _llm
+    if _llm is None:
+        xai_api_key = os.getenv("XAI_API_KEY")
+        if not xai_api_key:
+            raise RuntimeError("XAI_API_KEY environment variable is not set")
+        _llm = ChatXAI(
+            model="grok-3",
+            temperature=0,
+            api_key=xai_api_key
+        )
+    return _llm
+
+# For backward compatibility, create llm if not running migrations
+if not RUNNING_FLASK_COMMAND:
+    try:
+        llm = get_llm()
+    except RuntimeError as e:
+        print(f"Warning: {e}")
+        print("LLM will be initialized on first use")
+        llm = None
+else:
+    # Running migration command - skip LLM initialization
+    llm = None
 
 resume_summary_template = """
 Role: You are an AI Career Coach.
@@ -133,10 +160,18 @@ resume_prompt = PromptTemplate(
     template=resume_summary_template,
 )
 
-resume_analysis_chain = LLMChain(
-    llm=llm,
-    prompt=resume_prompt,
-)
+# Lazy initialization of chains
+_resume_analysis_chain = None
+
+def get_resume_analysis_chain():
+    """Get or create resume analysis chain"""
+    global _resume_analysis_chain
+    if _resume_analysis_chain is None:
+        _resume_analysis_chain = LLMChain(
+            llm=get_llm(),
+            prompt=resume_prompt,
+        )
+    return _resume_analysis_chain
 
 preparation_roadmap_template = """
 Role: You are an AI Career Coach creating personalized interview preparation roadmaps.
@@ -214,10 +249,18 @@ preparation_roadmap_prompt = PromptTemplate(
                      "timeline_months"],
     template=preparation_roadmap_template,
 )
-preparation_roadmap_chain = LLMChain(
-    llm=llm,
-    prompt=preparation_roadmap_prompt,
-)
+
+_preparation_roadmap_chain = None
+
+def get_preparation_roadmap_chain():
+    """Get or create preparation roadmap chain"""
+    global _preparation_roadmap_chain
+    if _preparation_roadmap_chain is None:
+        _preparation_roadmap_chain = LLMChain(
+            llm=get_llm(),
+            prompt=preparation_roadmap_prompt,
+        )
+    return _preparation_roadmap_chain
 
 # Job matching prompt template
 job_matching_template = """
@@ -252,10 +295,17 @@ job_matching_prompt = PromptTemplate(
     template=job_matching_template,
 )
 
-job_matching_chain = LLMChain(
-    llm=llm,
-    prompt=job_matching_prompt,
-)
+_job_matching_chain = None
+
+def get_job_matching_chain():
+    """Get or create job matching chain"""
+    global _job_matching_chain
+    if _job_matching_chain is None:
+        _job_matching_chain = LLMChain(
+            llm=get_llm(),
+            prompt=job_matching_prompt,
+        )
+    return _job_matching_chain
 
 
 def calculate_embedding_similarity(resume_embedding, job_embedding):
@@ -290,7 +340,7 @@ def find_matching_jobs_old(resume_text, top_k=5):
 
         # Get detailed analysis from LLM
         try:
-            analysis_result = job_matching_chain.run(
+            analysis_result = get_job_matching_chain().run(
                 resume=resume_text[:3000],  # Limit text size
                 job_title=job.title,
                 company=job.company,
@@ -372,7 +422,7 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
 
             # Get detailed LLM analysis (only for top_k!)
             try:
-                analysis_result = job_matching_chain.run(
+                analysis_result = get_job_matching_chain().run(
                     resume=resume_text[:3000],
                     job_title=job.title,
                     company=job.company,
@@ -556,7 +606,7 @@ def upload_file():
         vectorstore.save_local(user_vector_dir)
 
         # Run resume analysis using the LLM chain
-        resume_analysis = resume_analysis_chain.run(resume=resume_text)
+        resume_analysis = get_resume_analysis_chain().run(resume=resume_text)
 
         # Save analysis to Resume record
         resume.analysis = resume_analysis
@@ -623,6 +673,18 @@ def fetch_jobs():
                 return render_template('fetch_jobs.html',
                                        error="Please enter a number between 1 and 200 for max jobs")
 
+            # Save user preferences to AgentConfig for future agent runs
+            config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+            if not config:
+                config = AgentConfig(user_id=current_user.id)
+                db.session.add(config)
+
+            # Update Adzuna preferences
+            config.adzuna_location = location
+            config.adzuna_max_jobs = max_jobs
+            config.adzuna_max_days_old = max_days_old
+            db.session.commit()
+
             # Fetch jobs from Adzuna
             stats = fetch_jobs_from_adzuna(
                 keywords=keywords,
@@ -670,6 +732,23 @@ def fetch_jobs_api():
                 'success': False,
                 'error': 'max_jobs must be between 1 and 200'
             }), 400
+
+        # Save user preferences to AgentConfig for future agent runs
+        config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+        if not config:
+            config = AgentConfig(user_id=current_user.id)
+            db.session.add(config)
+
+        # Update Adzuna preferences if provided
+        if location is not None:  # Allow empty string to clear location
+            config.adzuna_location = location if location.strip() else None
+        if max_jobs:
+            config.adzuna_max_jobs = max_jobs
+        if max_days_old:
+            config.adzuna_max_days_old = max_days_old
+
+        db.session.commit()
+
         # Fetch jobs from Adzuna
         stats = fetch_jobs_from_adzuna(
             keywords=keywords,
@@ -755,7 +834,7 @@ def prepare_roadmap():
         else:
             # If no existing match, run quick analysis to get skill gaps
             try:
-                analysis_result = job_matching_chain.run(
+                analysis_result = get_job_matching_chain().run(
                     resume=resume_text[:3000],
                     job_title=job.title,
                     company=job.company,
@@ -769,7 +848,7 @@ def prepare_roadmap():
         # Convert skill gaps list to string for prompt
         skill_gaps_str = ", ".join(skill_gaps) if skill_gaps else "No specific gaps identified"
         # Generate the preparation roadmap
-        roadmap_result = preparation_roadmap_chain.run(
+        roadmap_result = get_preparation_roadmap_chain().run(
             resume=resume_text[:3000],
             job_title=job.title,
             company=job.company,
@@ -851,7 +930,7 @@ def find_matching_jobs_endpoint():
 
         resume_text = extract_text_from_pdf(latest_resume.file_path)
 
-        resume_analysis = resume_analysis_chain.run(resume=resume_text)
+        resume_analysis = get_resume_analysis_chain().run(resume=resume_text)
 
         matching_jobs = find_matching_jobs(resume_text, top_k=5)
 
@@ -955,7 +1034,7 @@ def check_job_match(job_id):
 
         # Get detailed LLM analysis
         try:
-            analysis_result = job_matching_chain.run(
+            analysis_result = get_job_matching_chain().run(
                 resume=resume_text[:3000],
                 job_title=job.title,
                 company=job.company,
@@ -1077,6 +1156,27 @@ def agent_config():
             config.match_threshold = float(data.get('match_threshold', config.match_threshold))
             config.max_results_per_run = int(data.get('max_results_per_run', config.max_results_per_run))
 
+            # Update Adzuna preferences if provided
+            if 'adzuna_location' in data:
+                location_value = data.get('adzuna_location', '').strip()
+                config.adzuna_location = location_value if location_value else None
+
+            if 'adzuna_max_jobs' in data:
+                try:
+                    max_jobs_value = int(data.get('adzuna_max_jobs', 20))
+                    if 1 <= max_jobs_value <= 200:
+                        config.adzuna_max_jobs = max_jobs_value
+                except (ValueError, TypeError):
+                    pass  # Keep existing value if invalid
+
+            if 'adzuna_max_days_old' in data:
+                try:
+                    max_days_old_value = int(data.get('adzuna_max_days_old', 30))
+                    if 1 <= max_days_old_value <= 365:
+                        config.adzuna_max_days_old = max_days_old_value
+                except (ValueError, TypeError):
+                    pass  # Keep existing value if invalid
+
             db.session.commit()
 
             # Rebuild scheduler if schedule time, timezone, or enabled status changed
@@ -1116,7 +1216,9 @@ def agent_history():
         page=page, per_page=per_page, error_out=False
     )
 
-    return render_template('agent_history.html', runs=runs, user=current_user)
+    config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+
+    return render_template('agent_history.html', runs=runs, config=config, user=current_user)
 
 
 @app.route('/agent/dashboard')
@@ -1189,6 +1291,13 @@ def agent_match_feedback(match_id):
         match.feedback_at = datetime.utcnow()
         db.session.commit()
 
+        # Update user preference embedding based on new feedback
+        try:
+            update_user_preferences(current_user.id)
+        except Exception as pref_error:
+            # Don't fail the request if preference update fails
+            print(f"Warning: Failed to update user preferences: {pref_error}")
+
         if request.is_json:
             return jsonify({
                 'success': True,
@@ -1238,6 +1347,17 @@ def from_json_filter(value):
         except (json.JSONDecodeError, TypeError):
             return []
     return []
+
+
+@app.template_filter('local_time')
+def local_time_filter(dt, timezone='UTC', fmt='%B %d, %Y at %I:%M %p'):
+    """Convert a naive UTC datetime to the user's timezone and format it"""
+    if dt is None:
+        return 'N/A'
+    from zoneinfo import ZoneInfo
+    utc_dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+    local_dt = utc_dt.astimezone(ZoneInfo(timezone))
+    return local_dt.strftime(fmt)
 
 
 

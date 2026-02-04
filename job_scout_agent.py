@@ -13,10 +13,11 @@ import json
 from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from job_fetcher import AdzunaJobFetcher
-from job_utils import get_job_faiss_index, build_job_faiss_index
+from job_utils import get_job_faiss_index, build_job_faiss_index, cosine_similarity
 from langchain.prompts import PromptTemplate
 from langchain_xai import ChatXAI
 import PyPDF2
+import numpy as np
 
 
 class JobScoutAgent:
@@ -248,19 +249,27 @@ Job titles:"""
         TOOL USE: Fetch new jobs from external API
 
         Agent uses Adzuna API to get fresh job postings
+        Uses user-specific preferences for location and max_jobs
         """
         try:
             fetcher = AdzunaJobFetcher()
 
-            # Fetch recent jobs (last 7 days)
+            # Get user-specific preferences from config
+            location = config.adzuna_location  # User's preferred location
+            max_jobs = config.adzuna_max_jobs if config.adzuna_max_jobs else 20  # Default to 20 if not set
+            max_days_old = config.adzuna_max_days_old if config.adzuna_max_days_old else 30  # Default to 30 if not set
+
+            # Fetch recent jobs using user preferences
+            print(f"[DEBUG] Fetching jobs — keywords: {keywords}, location: {location}, max_jobs: {max_jobs}, max_days_old: {max_days_old}")
             stats = fetcher.fetch_and_store_jobs(
                 keywords=keywords,
-                location=None,  # Can be configured later
-                max_jobs=20,  # Reasonable amount for daily checks
-                max_days_old=7,
+                location=location,
+                max_jobs=max_jobs,
+                max_days_old=max_days_old,
                 skip_duplicates=True
             )
 
+            print(f"[DEBUG] Fetch stats — fetched: {stats.get('fetched')}, stored: {stats.get('stored')}, duplicates: {stats.get('duplicates')}, errors: {stats.get('errors')}, error_messages: {stats.get('error_messages')}")
             return stats
 
         except Exception as e:
@@ -278,7 +287,8 @@ Job titles:"""
         """
         AUTONOMOUS ANALYSIS: Find matches and decide which to save
 
-        Agent analyzes jobs, evaluates matches, and decides which are worth showing to user
+        Agent analyzes jobs, evaluates matches, and decides which are worth showing to user.
+        Uses hybrid scoring: 70% resume match + 30% user preference match (if available)
         """
         matches_analyzed = []
         matches_saved = []
@@ -288,6 +298,17 @@ Job titles:"""
             job_index = get_job_faiss_index()
             if job_index is None:
                 return {'analyzed': [], 'saved': []}
+
+            # Get user's learned preferences
+            user_config = AgentConfig.query.filter_by(user_id=user_id).first()
+            user_preference_vector = user_config.preference_embedding if user_config else None
+
+            # Track if we're using preference-based personalization
+            using_preferences = user_preference_vector is not None
+            if using_preferences:
+                print(f"Using personalized matching for user {user_id} (preferences learned from feedback)")
+            else:
+                print(f"Using resume-only matching for user {user_id} (no feedback history yet)")
 
             # Search for similar jobs using FAISS (Stage 1: Fast retrieval)
             docs_with_scores = job_index.similarity_search_with_score(
@@ -331,20 +352,40 @@ Job titles:"""
                     # Parse JSON response
                     analysis = json.loads(analysis_result.content)
 
+                    # Get base match score from LLM analysis
+                    base_match_score = analysis['match_score']
+
+                    # HYBRID SCORING: Combine resume match with user preferences
+                    if using_preferences and job.embedding is not None:
+                        # Calculate preference similarity (how well job matches user's learned preferences)
+                        preference_similarity = cosine_similarity(user_preference_vector, job.embedding)
+                        # Convert to 0-100 scale (cosine similarity is -1 to 1)
+                        preference_score = (preference_similarity + 1) * 50
+
+                        # Weighted combination: 70% resume match + 30% preference match
+                        final_score = 0.7 * base_match_score + 0.3 * preference_score
+
+                        print(f"Job {job.id}: Resume match={base_match_score:.1f}, Preference match={preference_score:.1f}, Final={final_score:.1f}")
+                    else:
+                        # No preferences yet - use resume match only
+                        final_score = base_match_score
+
                     matches_analyzed.append({
                         'job_id': job.id,
-                        'match_score': analysis['match_score']
+                        'match_score': final_score,
+                        'base_score': base_match_score,
+                        'preference_adjusted': using_preferences
                     })
 
-                    # AUTONOMOUS DECISION: Only save matches above threshold
-                    if analysis['match_score'] >= threshold:
-                        # Save match to database
+                    # AUTONOMOUS DECISION: Only save matches above threshold (using final score)
+                    if final_score >= threshold:
+                        # Save match to database (with preference-adjusted score)
                         job_match = JobMatch(
                             user_id=user_id,
                             resume_id=resume_id,
                             resume_filename=resume_filename,
                             job_id=job.id,
-                            match_score=analysis['match_score'],
+                            match_score=final_score,  # Use hybrid score
                             matched_skills=json.dumps(analysis.get('matched_skills', [])),
                             gaps=json.dumps(analysis.get('skill_gaps', [])),
                             recommendation=analysis.get('recommendation', ''),
@@ -358,7 +399,7 @@ Job titles:"""
                             'job_id': job.id,
                             'job_title': job.title,
                             'company': job.company,
-                            'match_score': analysis['match_score'],
+                            'match_score': final_score,  # Use hybrid score
                             'matched_skills': analysis.get('matched_skills', []),
                             'skill_gaps': analysis.get('skill_gaps', [])
                         })
