@@ -180,6 +180,16 @@ class AgentConfig(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # User preference learning from feedback
+    preference_embedding = db.Column(db.PickleType)  # Learned user preference vector
+    preference_updated_at = db.Column(db.DateTime)  # When preferences were last computed
+
+    # Adzuna API preferences (for job fetching)
+    adzuna_location = db.Column(db.String(200))  # User's preferred job search location
+    adzuna_max_jobs = db.Column(db.Integer, default=20)  # Max jobs to fetch per run
+    adzuna_max_days_old = db.Column(db.Integer, default=30)  # Max age of jobs in days
+
+
     # Relationship
     user = db.relationship('User', backref=db.backref('agent_config', uselist=False))
 
@@ -195,7 +205,12 @@ class AgentConfig(db.Model):
             'max_results_per_run': self.max_results_per_run,
             'last_run_at': self.last_run_at.isoformat() if self.last_run_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'preference_updated_at': self.preference_updated_at.isoformat() if self.preference_updated_at else None,
+            'has_preferences': self.preference_embedding is not None,
+            'adzuna_location': self.adzuna_location,
+            'adzuna_max_jobs': self.adzuna_max_jobs,
+            'adzuna_max_days_old': self.adzuna_max_days_old
         }
 
     def __repr__(self):
