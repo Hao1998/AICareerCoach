@@ -17,7 +17,7 @@ from langchain.chains import RetrievalQA
 from langchain.text_splitter import CharacterTextSplitter
 
 from langchain.text_splitter import CharacterTextSplitter
-from models import db, JobPosting, JobMatch, User, Resume, AgentConfig, AgentRunHistory
+from models import db, JobPosting, JobMatch, User, Resume, AgentConfig, AgentRunHistory, ChatMessage
 from form import LoginForm, RegistrationForm
 from job_scout_agent import JobScoutAgent
 from agent_scheduler import init_scheduler
@@ -651,9 +651,24 @@ def ask_query():
 @app.route('/jobs')
 @login_required
 def list_jobs():
-    """Display all active job postings"""
+    """Display all active job postings, optionally filtered by chat AI"""
+    ids_param = request.args.get('ids', '')
+    is_chat_filtered = False
+
+    if ids_param:
+        try:
+            id_list = [int(x.strip()) for x in ids_param.split(',') if x.strip()]
+            if id_list:
+                # Fetch jobs in the order specified by ids
+                jobs_dict = {j.id: j for j in JobPosting.query.filter(JobPosting.id.in_(id_list)).all()}
+                jobs = [jobs_dict[jid] for jid in id_list if jid in jobs_dict]
+                is_chat_filtered = True
+                return render_template('jobs.html', jobs=jobs, user=current_user, is_chat_filtered=is_chat_filtered)
+        except (ValueError, TypeError):
+            pass
+
     jobs = JobPosting.query.filter_by(is_active=True).order_by(JobPosting.posted_date.desc()).all()
-    return render_template('jobs.html', jobs=jobs, user=current_user)
+    return render_template('jobs.html', jobs=jobs, user=current_user, is_chat_filtered=is_chat_filtered)
 
 
 @app.route('/jobs/fetch', methods=['GET', 'POST'])
@@ -829,8 +844,8 @@ def prepare_roadmap():
             job_id=job_id
         ).first()
         skill_gaps = []
-        if job_match and job_match.skill_gaps:
-            skill_gaps = job_match.skill_gaps
+        if job_match and job_match.gaps:
+            skill_gaps = json.loads(job_match.gaps) if job_match.gaps else []
         else:
             # If no existing match, run quick analysis to get skill gaps
             try:
@@ -1359,6 +1374,89 @@ def local_time_filter(dt, timezone='UTC', fmt='%B %d, %Y at %I:%M %p'):
     local_dt = utc_dt.astimezone(ZoneInfo(timezone))
     return local_dt.strftime(fmt)
 
+
+
+# ============================================
+# Career Coach Chatbot Routes
+# ============================================
+
+_chatbot = None
+
+def get_chatbot():
+    """Lazy-initialize the chatbot to avoid circular imports"""
+    global _chatbot
+    if _chatbot is None:
+        from chatbot import CareerCoachChatbot
+        _chatbot = CareerCoachChatbot(app)
+    return _chatbot
+
+
+@app.route('/api/chat', methods=['POST'])
+@login_required
+def chat_api():
+    """Main chat endpoint for Career Coach AI"""
+    try:
+        data = request.get_json()
+        if not data or not data.get('message', '').strip():
+            return jsonify({"success": False, "error": "Message is required"}), 400
+
+        message = data['message'].strip()
+        if len(message) > 2000:
+            return jsonify({"success": False, "error": "Message too long (max 2000 characters)"}), 400
+
+        result = get_chatbot().chat(current_user.id, message)
+
+        return jsonify({
+            "success": True,
+            "response": result["response"],
+            "intent": result.get("intent"),
+            "action_data": result.get("action_data")
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Chat error: {str(e)}"}), 500
+
+
+@app.route('/api/chat/history', methods=['GET'])
+@login_required
+def chat_history_api():
+    """Get chat message history"""
+    limit = request.args.get('limit', 50, type=int)
+    messages = ChatMessage.query.filter_by(
+        user_id=current_user.id
+    ).order_by(ChatMessage.timestamp.asc()).limit(limit).all()
+
+    return jsonify({
+        "messages": [m.to_dict() for m in messages]
+    })
+
+
+@app.route('/api/chat/history', methods=['DELETE'])
+@login_required
+def clear_chat_history():
+    """Clear all chat messages for current user"""
+    ChatMessage.query.filter_by(user_id=current_user.id).delete()
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route('/chat-widget')
+@login_required
+def chat_widget():
+    """Serve the chat widget HTML fragment"""
+    return render_template('chat_widget.html')
+
+
+@app.after_request
+def inject_chat_widget_script(response):
+    """Inject chat widget loader script into all authenticated HTML pages"""
+    if (not response.direct_passthrough and
+            response.content_type and
+            response.content_type.startswith('text/html') and
+            current_user.is_authenticated and
+            response.status_code == 200):
+        script = b'<script src="/static/js/chat_widget_loader.js" defer></script></body>'
+        response.data = response.data.replace(b'</body>', script)
+    return response
 
 
 if __name__ == "__main__":

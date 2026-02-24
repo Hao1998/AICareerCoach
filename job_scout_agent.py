@@ -164,6 +164,7 @@ Return ONLY valid JSON in this format:
 
                 # DECISION 5: Find matching jobs using FAISS + LLM
                 # Agent analyzes matches autonomously
+                print(f"[DEBUG] Fetching jobs threadshold: {config.match_threshold}")
                 matches = self._find_and_save_matches(
                     user_id=user_id,
                     resume_id=latest_resume.id,
