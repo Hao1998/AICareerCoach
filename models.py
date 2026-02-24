@@ -189,6 +189,8 @@ class AgentConfig(db.Model):
     adzuna_max_jobs = db.Column(db.Integer, default=20)  # Max jobs to fetch per run
     adzuna_max_days_old = db.Column(db.Integer, default=30)  # Max age of jobs in days
 
+    # Chat conversation summary (rolling LLM-generated summary of past sessions)
+    conversation_summary = db.Column(db.Text, nullable=True)
 
     # Relationship
     user = db.relationship('User', backref=db.backref('agent_config', uselist=False))
@@ -215,6 +217,36 @@ class AgentConfig(db.Model):
 
     def __repr__(self):
         return f'<AgentConfig user_id={self.user_id} enabled={self.is_enabled}>'
+
+
+class ChatMessage(db.Model):
+    """Model for storing chat messages between user and Career Coach AI"""
+    __tablename__ = 'chat_messages'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    role = db.Column(db.String(20), nullable=False)  # 'user' or 'assistant'
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    intent = db.Column(db.String(50), nullable=True)  # e.g. 'redirect_to_jobs'
+    action_data = db.Column(db.Text, nullable=True)  # JSON string for action metadata
+
+    # Relationship
+    user = db.relationship('User', backref=db.backref('chat_messages', lazy='dynamic', cascade='all, delete-orphan'))
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'role': self.role,
+            'content': self.content,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'intent': self.intent,
+            'action_data': json.loads(self.action_data) if self.action_data else None
+        }
+
+    def __repr__(self):
+        return f'<ChatMessage id={self.id} user_id={self.user_id} role={self.role}>'
 
 
 class AgentRunHistory(db.Model):

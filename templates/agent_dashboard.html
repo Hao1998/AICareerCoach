@@ -100,7 +100,7 @@
                         <p class="text-sm font-medium text-gray-600">Last Run</p>
                         <p class="text-lg font-bold text-gray-900">
                             {% if config.last_run_at %}
-                                {{ config.last_run_at.strftime('%b %d') }}
+                                {{ config.last_run_at|local_time(config.timezone, '%b %d at %I:%M %p') }}
                             {% else %}
                                 Never
                             {% endif %}
@@ -221,7 +221,7 @@
                                         Found {{ run.matches_found }} matches from {{ run.jobs_analyzed }} jobs
                                     </p>
                                     <p class="text-xs text-gray-500 mt-1">
-                                        {{ run.started_at.strftime('%b %d at %I:%M %p') }}
+                                        {{ run.started_at|local_time(config.timezone, '%b %d at %I:%M %p') }}
                                     </p>
                                 </div>
                                 {% if run.matches_found > 0 %}

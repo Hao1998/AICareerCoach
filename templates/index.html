@@ -95,7 +95,11 @@
                     </svg>
                     Find Matching Jobs
                 </button>
+                <p id="status-message" class="text-sm text-gray-500 mt-2">
+                    📤 Please upload your resume first to find matching jobs
+                </p>
             </form>
+
             <!-- Job Management & Ask Question Section -->
             <div class="pt-8 border-t border-gray-200">
                 <p class="text-sm text-gray-600 mb-4">Manage job postings or view available positions:</p>
@@ -169,35 +173,43 @@
         }
     }
 
-    // Handle Find Matching Jobs button click
-    {#document.getElementById('find-jobs-btn').addEventListener('click', async function () {#}
-    {#    const btn = this;#}
-    {#    const originalText = btn.innerHTML;#}
-    {##}
-    {#    // Show loading state#}
-    {#    btn.disabled = true;#}
-    {#    btn.innerHTML = `#}
-    {#            <svg class="animate-spin h-5 w-5 mr-2 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">#}
-    {#                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>#}
-    {#                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>#}
-    {#            </svg>#}
-    {#            Finding Jobs...#}
-    {#        `;#}
-    {#    document.getElementById('find-jobs-btn').addEventListener('click', function () {#}
-    {#        // Create and submit a form#}
-    {#        const form = document.createElement('form');#}
-    {#        form.method = 'POST';#}
-    {#        form.action = '/find-matching-jobs';#}
-    {#        document.body.appendChild(form);#}
-    {#        form.submit();#}
-    {#    });#}
-    {##}
-    {#})
-        ;
-        #}
+    // Handle Find Matching Jobs form submission
+    document.getElementById('find-jobs-form').addEventListener('submit', function (e) {
+        e.preventDefault(); // Prevent default form submission
 
-        // Check resume status on page load
-        checkResumeStatus();
+        // Show loading modal
+        const loadingModal = document.getElementById('loading-modal');
+        loadingModal.classList.remove('hidden');
+
+        // Disable the button to prevent multiple submissions
+        const findJobsBtn = document.getElementById('find-jobs-btn');
+        findJobsBtn.disabled = true;
+
+        // Submit the form
+        // Note: Since the endpoint returns HTML (render_template), we submit the form normally
+        // after showing the modal
+        setTimeout(() => {
+            this.submit();
+        }, 100); // Small delay to ensure modal is visible
+    });
+
+    // Check resume status on page load
+    checkResumeStatus();
 </script>
+
+<!-- Loading Modal -->
+<div id="loading-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+        <div class="sticky top-0 bg-gradient-to-r from-purple-600 to-pink-600 text-white p-6 rounded-t-xl flex justify-between items-center">
+            <h2 class="text-2xl font-bold">🔍 Finding Matching Jobs</h2>
+        </div>
+        <div class="p-6">
+            <div class="flex justify-center items-center py-12">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
+                <span class="ml-4 text-gray-600">Finding matching jobs for your resume...</span>
+            </div>
+        </div>
+    </div>
+</div>
 </body>
 </html>
