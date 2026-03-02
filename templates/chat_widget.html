@@ -1,0 +1,382 @@
+<!-- Career Coach AI Chat Widget -->
+<style>
+    #chat-bubble-btn {
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        z-index: 9999;
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
+        color: white;
+        border: none;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    #chat-bubble-btn:hover {
+        transform: scale(1.08);
+        box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5);
+    }
+    #chat-panel {
+        position: fixed;
+        bottom: 5.5rem;
+        right: 1.5rem;
+        z-index: 9998;
+        width: 380px;
+        height: 520px;
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+        display: none;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    #chat-panel.open {
+        display: flex;
+    }
+    .chat-header {
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
+        color: white;
+        padding: 14px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+    }
+    .chat-header-title {
+        font-weight: 600;
+        font-size: 15px;
+    }
+    .chat-clear-btn {
+        background: rgba(255,255,255,0.2);
+        color: white;
+        border: none;
+        padding: 4px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+    .chat-clear-btn:hover {
+        background: rgba(255,255,255,0.35);
+    }
+    #chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .chat-msg {
+        max-width: 85%;
+        padding: 10px 14px;
+        border-radius: 14px;
+        font-size: 13.5px;
+        line-height: 1.45;
+        word-wrap: break-word;
+    }
+    .chat-msg.user {
+        align-self: flex-end;
+        background: #2563eb;
+        color: white;
+        border-bottom-right-radius: 4px;
+    }
+    .chat-msg.assistant {
+        align-self: flex-start;
+        background: #f3f4f6;
+        color: #1f2937;
+        border-bottom-left-radius: 4px;
+    }
+    .chat-action-btn {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 6px 14px;
+        background: #2563eb;
+        color: white;
+        border-radius: 8px;
+        text-decoration: none;
+        font-size: 12.5px;
+        font-weight: 500;
+        transition: background 0.2s;
+    }
+    .chat-action-btn:hover {
+        background: #1d4ed8;
+        color: white;
+    }
+    #chat-typing {
+        display: none;
+        align-self: flex-start;
+        padding: 10px 14px;
+        background: #f3f4f6;
+        border-radius: 14px;
+        border-bottom-left-radius: 4px;
+    }
+    .typing-dots {
+        display: flex;
+        gap: 4px;
+    }
+    .typing-dots span {
+        width: 7px;
+        height: 7px;
+        background: #9ca3af;
+        border-radius: 50%;
+        animation: bounce 1.4s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+        0%, 60%, 100% { transform: translateY(0); }
+        30% { transform: translateY(-6px); }
+    }
+    .chat-input-area {
+        display: flex;
+        align-items: flex-end;
+        padding: 10px 12px;
+        border-top: 1px solid #e5e7eb;
+        gap: 8px;
+        flex-shrink: 0;
+    }
+    #chat-input {
+        flex: 1;
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 13.5px;
+        resize: none;
+        max-height: 80px;
+        min-height: 36px;
+        outline: none;
+        font-family: inherit;
+        line-height: 1.4;
+    }
+    #chat-input:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+    }
+    #chat-send-btn {
+        background: #2563eb;
+        color: white;
+        border: none;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        transition: background 0.2s;
+    }
+    #chat-send-btn:hover { background: #1d4ed8; }
+    #chat-send-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+    .chat-char-count {
+        font-size: 11px;
+        color: #9ca3af;
+        text-align: right;
+        padding: 0 14px 4px;
+        flex-shrink: 0;
+    }
+    @media (max-width: 480px) {
+        #chat-panel {
+            width: calc(100vw - 1.5rem);
+            right: 0.75rem;
+            height: 70vh;
+        }
+    }
+</style>
+
+<!-- Chat Bubble Button -->
+<button id="chat-bubble-btn" aria-label="Open Career Coach AI chat">
+    <svg id="chat-icon-open" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+    </svg>
+    <svg id="chat-icon-close" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="display:none;">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+    </svg>
+</button>
+
+<!-- Chat Panel -->
+<div id="chat-panel">
+    <div class="chat-header">
+        <span class="chat-header-title">Career Coach AI</span>
+        <button class="chat-clear-btn" id="chat-clear-btn">Clear</button>
+    </div>
+    <div id="chat-messages">
+        <div class="chat-msg assistant">
+            Hi! I'm your Career Coach AI. I can help you find matching jobs, answer questions about your resume, run the job scout agent, and more. How can I help you today?
+        </div>
+    </div>
+    <div id="chat-typing">
+        <div class="typing-dots">
+            <span></span><span></span><span></span>
+        </div>
+    </div>
+    <div class="chat-char-count" id="chat-char-count"></div>
+    <div class="chat-input-area">
+        <textarea id="chat-input" placeholder="Ask me anything..." rows="1" maxlength="2000"></textarea>
+        <button id="chat-send-btn" disabled aria-label="Send message">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+        </button>
+    </div>
+</div>
+
+<script>
+(function() {
+    const bubbleBtn = document.getElementById('chat-bubble-btn');
+    const panel = document.getElementById('chat-panel');
+    const iconOpen = document.getElementById('chat-icon-open');
+    const iconClose = document.getElementById('chat-icon-close');
+    const messagesEl = document.getElementById('chat-messages');
+    const typingEl = document.getElementById('chat-typing');
+    const inputEl = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('chat-send-btn');
+    const clearBtn = document.getElementById('chat-clear-btn');
+    const charCountEl = document.getElementById('chat-char-count');
+
+    let isOpen = false;
+    let historyLoaded = false;
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function formatContent(text) {
+        let formatted = escapeHtml(text);
+        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        formatted = formatted.replace(/\n/g, '<br>');
+        return formatted;
+    }
+
+    function scrollToBottom() {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function appendMessage(role, content, intent, actionData) {
+        const div = document.createElement('div');
+        div.className = 'chat-msg ' + role;
+        let html = formatContent(content);
+
+        if (intent === 'redirect_to_jobs' && actionData && actionData.job_ids) {
+            const ids = actionData.job_ids.join(',');
+            html += '<br><a href="/jobs?ids=' + ids + '" class="chat-action-btn">View ' + actionData.job_ids.length + ' Matching Jobs</a>';
+        }
+
+        div.innerHTML = html;
+        messagesEl.appendChild(div);
+        scrollToBottom();
+    }
+
+    function loadHistory() {
+        fetch('/api/chat/history')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.messages && data.messages.length > 0) {
+                    // Clear default welcome message
+                    messagesEl.innerHTML = '';
+                    data.messages.forEach(function(msg) {
+                        appendMessage(msg.role, msg.content, msg.intent, msg.action_data);
+                    });
+                }
+                historyLoaded = true;
+            })
+            .catch(function(err) {
+                console.error('Failed to load chat history:', err);
+                historyLoaded = true;
+            });
+    }
+
+    function togglePanel() {
+        isOpen = !isOpen;
+        if (isOpen) {
+            panel.classList.add('open');
+            iconOpen.style.display = 'none';
+            iconClose.style.display = 'block';
+            if (!historyLoaded) loadHistory();
+            inputEl.focus();
+        } else {
+            panel.classList.remove('open');
+            iconOpen.style.display = 'block';
+            iconClose.style.display = 'none';
+        }
+    }
+
+    function sendMessage() {
+        const text = inputEl.value.trim();
+        if (!text) return;
+
+        appendMessage('user', text);
+        inputEl.value = '';
+        inputEl.style.height = 'auto';
+        sendBtn.disabled = true;
+        charCountEl.textContent = '';
+
+        typingEl.style.display = 'block';
+        scrollToBottom();
+
+        fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: text })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            typingEl.style.display = 'none';
+            if (data.success) {
+                appendMessage('assistant', data.response, data.intent, data.action_data);
+            } else {
+                appendMessage('assistant', 'Sorry, something went wrong: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(function(err) {
+            typingEl.style.display = 'none';
+            appendMessage('assistant', 'Sorry, I had trouble connecting. Please try again.');
+        });
+    }
+
+    function clearHistory() {
+        if (!confirm('Clear all chat history?')) return;
+        fetch('/api/chat/history', { method: 'DELETE' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    messagesEl.innerHTML = '';
+                    appendMessage('assistant', 'Chat history cleared. How can I help you?');
+                }
+            });
+    }
+
+    // Event listeners
+    bubbleBtn.addEventListener('click', togglePanel);
+    clearBtn.addEventListener('click', clearHistory);
+    sendBtn.addEventListener('click', sendMessage);
+
+    inputEl.addEventListener('input', function() {
+        // Auto-resize
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 80) + 'px';
+        // Enable/disable send
+        sendBtn.disabled = !this.value.trim();
+        // Char count
+        var len = this.value.length;
+        charCountEl.textContent = len > 0 ? len + '/2000' : '';
+    });
+
+    inputEl.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (inputEl.value.trim()) sendMessage();
+        }
+    });
+})();
+</script>

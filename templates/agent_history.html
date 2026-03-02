@@ -17,11 +17,11 @@
                 <span class="text-xl font-bold text-blue-600">AI Career Coach</span>
             </div>
             <div class="flex items-center space-x-4">
-                <a href="{{ url_for('index') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
-                <a href="{{ url_for('list_jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
-                <a href="{{ url_for('profile') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
-                <a href="{{ url_for('agent_dashboard') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
-                <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
+                <a href="{{ url_for('auth.index') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
+                <a href="{{ url_for('jobs.list_jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
+                <a href="{{ url_for('auth.profile') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
+                <a href="{{ url_for('agent.agent_dashboard') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
+                <a href="{{ url_for('auth.logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
             </div>
         </div>
     </div>
@@ -30,7 +30,7 @@
 <main class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
     <!-- Header -->
     <div class="mb-6">
-        <a href="{{ url_for('agent_dashboard') }}" class="text-blue-600 hover:text-blue-700 text-sm font-medium mb-2 inline-block">
+        <a href="{{ url_for('agent.agent_dashboard') }}" class="text-blue-600 hover:text-blue-700 text-sm font-medium mb-2 inline-block">
             ← Back to Agent Dashboard
         </a>
         <h1 class="text-3xl font-bold text-gray-900">Agent Run History</h1>
@@ -94,7 +94,7 @@
                             </div>
 
                             {% if run.matches_found > 0 %}
-                                <a href="{{ url_for('agent_run_matches', run_id=run.id) }}"
+                                <a href="{{ url_for('agent.agent_run_matches', run_id=run.id) }}"
                                    class="ml-4 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
                                     View Matches →
                                 </a>
@@ -113,13 +113,13 @@
                         </div>
                         <div class="flex gap-2">
                             {% if runs.has_prev %}
-                                <a href="{{ url_for('agent_history', page=runs.prev_num) }}"
+                                <a href="{{ url_for('agent.agent_history', page=runs.prev_num) }}"
                                    class="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
                                     Previous
                                 </a>
                             {% endif %}
                             {% if runs.has_next %}
-                                <a href="{{ url_for('agent_history', page=runs.next_num) }}"
+                                <a href="{{ url_for('agent.agent_history', page=runs.next_num) }}"
                                    class="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
                                     Next
                                 </a>
