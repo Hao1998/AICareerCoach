@@ -17,11 +17,11 @@
                 <span class="text-xl font-bold text-blue-600">AI Career Coach</span>
             </div>
             <div class="flex items-center space-x-4">
-                <a href="{{ url_for('index') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
-                <a href="{{ url_for('list_jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
-                <a href="{{ url_for('profile') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
-                <a href="{{ url_for('agent_dashboard') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
-                <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
+                <a href="{{ url_for('auth.index') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
+                <a href="{{ url_for('jobs.list_jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
+                <a href="{{ url_for('auth.profile') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
+                <a href="{{ url_for('agent.agent_dashboard') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
+                <a href="{{ url_for('auth.logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
             </div>
         </div>
     </div>
@@ -63,7 +63,7 @@
     <div class="bg-white rounded-lg shadow-md p-6 mb-6">
         <div class="flex justify-between items-center mb-4">
             <h2 class="text-2xl font-bold text-gray-900">Agent Status</h2>
-            <a href="{{ url_for('agent_config') }}" class="text-blue-600 hover:text-blue-700 text-sm font-medium">
+            <a href="{{ url_for('agent.agent_config') }}" class="text-blue-600 hover:text-blue-700 text-sm font-medium">
                 Configure →
             </a>
         </div>
@@ -198,7 +198,7 @@
         <div class="bg-white rounded-lg shadow-md p-6">
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-2xl font-bold text-gray-900">Run History</h2>
-                <a href="{{ url_for('agent_history') }}" class="text-blue-600 hover:text-blue-700 text-sm font-medium">
+                <a href="{{ url_for('agent.agent_history') }}" class="text-blue-600 hover:text-blue-700 text-sm font-medium">
                     View All →
                 </a>
             </div>
@@ -225,7 +225,7 @@
                                     </p>
                                 </div>
                                 {% if run.matches_found > 0 %}
-                                    <a href="{{ url_for('agent_run_matches', run_id=run.id) }}"
+                                    <a href="{{ url_for('agent.agent_run_matches', run_id=run.id) }}"
                                        class="text-blue-600 hover:text-blue-700 text-xs font-medium">
                                         View →
                                     </a>
@@ -291,7 +291,7 @@
             `;
 
         try {
-            const response = await fetch('{{ url_for("trigger_agent") }}', {
+            const response = await fetch('{{ url_for("agent.trigger_agent") }}', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'

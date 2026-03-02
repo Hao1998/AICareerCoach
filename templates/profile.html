@@ -17,11 +17,11 @@
                     <span class="text-xl font-bold text-blue-600">AI Career Coach</span>
                 </div>
                 <div class="flex items-center space-x-4">
-                    <a href="{{ url_for('index') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
-                    <a href="{{ url_for('list_jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
-                    <a href="{{ url_for('profile') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
-                    <a href="{{ url_for('agent_dashboard') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
-                    <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
+                    <a href="{{ url_for('auth.index') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Home</a>
+                    <a href="{{ url_for('jobs.list_jobs') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Jobs</a>
+                    <a href="{{ url_for('auth.profile') }}" class="text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Profile</a>
+                    <a href="{{ url_for('agent.agent_dashboard') }}" class="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">Agent</a>
+                    <a href="{{ url_for('auth.logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</a>
                 </div>
             </div>
         </div>
@@ -86,7 +86,7 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                         </svg>
                         <p class="mt-2 text-gray-600">No resumes uploaded yet</p>
-                        <a href="{{ url_for('index') }}" class="mt-4 inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
+                        <a href="{{ url_for('auth.index') }}" class="mt-4 inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
                             Upload Resume
                         </a>
                     </div>
@@ -139,7 +139,7 @@
                         <p class="text-blue-100 text-sm mt-1">Your AI assistant is working for you</p>
                     </div>
                 </div>
-                <a href="{{ url_for('agent_dashboard') }}"
+                <a href="{{ url_for('agent.agent_dashboard') }}"
                    class="bg-white text-blue-600 hover:bg-blue-50 px-6 py-3 rounded-lg font-semibold transition">
                     Open Dashboard →
                 </a>

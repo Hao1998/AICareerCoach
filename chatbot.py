@@ -10,22 +10,44 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+# Clean top-level imports — no circular dependency now that services layer exists
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.tools import tool
+
+from models import ChatMessage, AgentConfig, Resume, User, db
+from services.llm_service import get_llm, get_resume_tailoring_chain
+from services.resume_service import perform_qa, extract_text_from_pdf
+from services.job_service import find_matching_jobs
+
 logger = logging.getLogger(__name__)
 
-SESSION_TIMEOUT_MINUTES = 30
+SESSION_TIMEOUT_MINUTES = 5
+
+_UNICODE_TO_ASCII = {
+    '\u201c': '"', '\u201d': '"',  # " "  smart double quotes
+    '\u2018': "'", '\u2019': "'",  # ' '  smart single quotes
+    '\u2014': '--',                 # —   em dash
+    '\u2013': '-',                  # –   en dash
+    '\u2026': '...',                # …   ellipsis
+    '\u00a0': ' ',                  # non-breaking space
+}
+
+
+def _sanitize(text: str) -> str:
+    """Replace common non-ASCII typographic characters with ASCII equivalents."""
+    for char, replacement in _UNICODE_TO_ASCII.items():
+        text = text.replace(char, replacement)
+    return text
 
 
 def build_tools(app, user_id):
     """Build LangChain tools for the career coach agent"""
-    from langchain_core.tools import tool
 
     @tool
     def find_top_jobs(query: str) -> str:
         """Find the top 5 matching jobs for the user based on their resume. Use this when the user asks to find jobs, get job recommendations, or match their resume to jobs. The query parameter can be a description of what kind of jobs they want."""
         with app.app_context():
-            from models import Resume
-            from app import find_matching_jobs, extract_text_from_pdf
-
             resume = Resume.query.filter_by(
                 user_id=user_id, is_active=True
             ).order_by(Resume.uploaded_at.desc()).first()
@@ -63,7 +85,6 @@ def build_tools(app, user_id):
     def get_resume_info(question: str) -> str:
         """Answer questions about the user's resume, skills, experience, or qualifications. Use this when the user asks about their resume content, skills, strengths, or weaknesses."""
         with app.app_context():
-            from app import perform_qa
             try:
                 result = perform_qa(question, user_id)
                 return result
@@ -75,8 +96,9 @@ def build_tools(app, user_id):
     def trigger_job_scout_agent(reason: str) -> str:
         """Trigger the Job Scout Agent to automatically search for new jobs and find matches. Use this when the user asks to run the agent, scan for new jobs, or do an automatic job search."""
         with app.app_context():
-            from app import agent_scheduler
+            from flask import current_app
             try:
+                agent_scheduler = current_app.extensions['scheduler']
                 result = agent_scheduler.trigger_manual_run(user_id)
                 return json.dumps({
                     "success": result['status'] == 'success',
@@ -128,13 +150,88 @@ def build_tools(app, user_id):
             "interview_roadmap": "Generate a personalized preparation roadmap for any job. It creates a phased plan with skills to learn, resources, projects, milestones, and progressive interview questions tailored to your skill gaps.",
             "job_feedback": "Provide feedback on job matches (interested, not interested, applied) to help the system learn your preferences. Over time, the agent learns to find better matches based on your feedback patterns.",
             "fetch_jobs": "Fetch real job postings from the Adzuna API. You can filter by keywords, location, and job age. Fetched jobs are stored in the database and available for matching.",
-            "agent_config": "Configure the Job Scout Agent's behavior: schedule time, timezone, match threshold (minimum score to save), max results per run, and Adzuna search preferences (location, max jobs, max age)."
+            "agent_config": "Configure the Job Scout Agent's behavior: schedule time, timezone, match threshold (minimum score to save), max results per run, and Adzuna search preferences (location, max jobs, max age).",
+            "resume_tailoring": "ATS-optimize your resume for a specific job. The system searches the job database for the target role, then uses an LLM to analyze keyword gaps, rewrite your Professional Summary, reorder your Skills section, and reframe up to 5 experience bullets using the job's language. It also estimates your ATS keyword match score before and after the changes."
         }
         result = features.get(feature_name.lower().strip(),
                               f"Unknown feature: '{feature_name}'. Available features: {', '.join(features.keys())}")
         return result
 
-    return [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches, explain_feature]
+    @tool
+    def search_job_by_title(title: str) -> str:
+        """Search for jobs in the database by job title or role name. Use this FIRST when the user wants to tailor their resume to a specific job title, so you can get the job's full description and requirements. Returns a list of matching jobs with their IDs."""
+        with app.app_context():
+            from models import JobPosting
+            from sqlalchemy import or_
+            jobs = JobPosting.query.filter(
+                JobPosting.is_active == True,
+                or_(
+                    JobPosting.title.ilike(f'%{title}%'),
+                    JobPosting.description.ilike(f'%{title}%')
+                )
+            ).order_by(JobPosting.posted_date.desc()).limit(5).all()
+
+            if not jobs:
+                return json.dumps({
+                    "success": False,
+                    "error": f"No jobs matching '{title}' found in the database. Ask the user to fetch jobs from the Jobs page first, or ask them to paste the job description directly."
+                })
+
+            return json.dumps({
+                "success": True,
+                "jobs": [
+                    {"id": j.id, "title": j.title, "company": j.company or "Unknown", "location": j.location or ""}
+                    for j in jobs
+                ]
+            })
+
+    @tool
+    def tailor_resume_to_job(job_id: int) -> str:
+        """Tailor the user's resume to ATS-optimize it for a specific job posting. Returns keyword analysis, ATS score estimate (before/after), tailored resume sections (summary, skills, experience bullets), and formatting tips. Always call search_job_by_title first to get the job_id."""
+        with app.app_context():
+            from models import JobPosting
+            job = JobPosting.query.get(job_id)
+            if not job:
+                return json.dumps({"success": False, "error": f"Job ID {job_id} not found."})
+
+            resume = Resume.query.filter_by(
+                user_id=user_id, is_active=True
+            ).order_by(Resume.uploaded_at.desc()).first()
+            if not resume:
+                return json.dumps({"success": False, "error": "No resume found. Please upload a resume first."})
+
+            try:
+                resume_text = extract_text_from_pdf(resume.file_path)
+                chain = get_resume_tailoring_chain()
+                result = chain.invoke({
+                    "resume": resume_text[:4000],
+                    "job_title": job.title,
+                    "company": job.company or "the company",
+                    "job_description": (job.description or "")[:2000],
+                    "job_requirements": (job.requirements or "")[:1500],
+                })
+                raw = result.get('text', str(result))
+                # Strip markdown code fences if the model wraps the JSON
+                raw = raw.strip()
+                if raw.startswith('```'):
+                    raw = raw.split('```')[1]
+                    if raw.startswith('json'):
+                        raw = raw[4:]
+                try:
+                    tailoring = json.loads(raw)
+                except json.JSONDecodeError:
+                    tailoring = raw
+                return json.dumps({
+                    "success": True,
+                    "job": {"id": job.id, "title": job.title, "company": job.company},
+                    "tailoring": tailoring
+                })
+            except Exception as e:
+                logger.error(f"tailor_resume_to_job error: {e}")
+                return json.dumps({"success": False, "error": str(e)})
+
+    return [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches, explain_feature,
+            search_job_by_title, tailor_resume_to_job]
 
 
 def build_system_prompt(user, resume, agent_config):
@@ -164,6 +261,8 @@ You have access to the following tools to help the user:
 3. trigger_job_scout_agent - Run the automatic job scout agent
 4. get_recent_matches - Show recent job match results
 5. explain_feature - Explain app features
+6. search_job_by_title - Search the job database by job title/role name (returns job IDs)
+7. tailor_resume_to_job - ATS-optimize the resume for a specific job (needs job_id from search_job_by_title)
 
 Guidelines:
 1. Be friendly, professional, and encouraging.
@@ -175,7 +274,13 @@ Guidelines:
 7. If the user hasn't uploaded a resume yet, guide them to do so.
 8. Use the user's career context from previous sessions to give personalized advice.
 9. When explaining features, use explain_feature tool for accurate information.
-10. If a tool returns an error, explain the issue helpfully and suggest next steps."""
+10. If a tool returns an error, explain the issue helpfully and suggest next steps.
+11. When the user asks to tailor, adjust, or optimize their resume for a specific job title or role:
+    a. ALWAYS call search_job_by_title first to find matching jobs in the database.
+    b. If jobs are found, pick the best match and call tailor_resume_to_job with its ID.
+    c. Present the results clearly: show the ATS score improvement, missing keywords, the tailored Professional Summary, and the top rewritten experience bullets.
+    d. If no jobs are found, tell the user to fetch jobs from the Jobs page first, then try again.
+    e. NEVER ask the user to paste a job description manually — always search the database first."""
 
 
 def summarize_session(messages, llm):
@@ -213,7 +318,6 @@ class CareerCoachChatbot:
     def detect_session_boundary(self, user_id):
         """Check if the last message was more than SESSION_TIMEOUT_MINUTES ago"""
         with self.app.app_context():
-            from models import ChatMessage
             last_msg = ChatMessage.query.filter_by(
                 user_id=user_id
             ).order_by(ChatMessage.timestamp.desc()).first()
@@ -227,10 +331,6 @@ class CareerCoachChatbot:
     def close_and_summarize_session(self, user_id):
         """Summarize old session messages and store in AgentConfig"""
         with self.app.app_context():
-            from models import ChatMessage, AgentConfig, db
-            from app import get_llm
-
-            # Get all messages (the old session)
             messages = ChatMessage.query.filter_by(
                 user_id=user_id
             ).order_by(ChatMessage.timestamp.asc()).all()
@@ -244,13 +344,11 @@ class CareerCoachChatbot:
             if not new_summary:
                 return
 
-            # Get or create agent config
             config = AgentConfig.query.filter_by(user_id=user_id).first()
             if not config:
                 config = AgentConfig(user_id=user_id)
                 db.session.add(config)
 
-            # Merge with existing summary if present
             if config.conversation_summary:
                 merge_prompt = f"""Merge these two conversation summaries into one concise summary (3-5 sentences).
 Focus on: job preferences, skills, career goals, actions taken, feedback given.
@@ -276,13 +374,11 @@ Merged summary:"""
     def get_conversation_history(self, user_id, limit=10):
         """Load last N messages as LangChain message objects"""
         from langchain_core.messages import HumanMessage, AIMessage
-        from models import ChatMessage
 
         messages = ChatMessage.query.filter_by(
             user_id=user_id
         ).order_by(ChatMessage.timestamp.desc()).limit(limit).all()
 
-        # Reverse to chronological order
         messages = list(reversed(messages))
 
         history = []
@@ -297,11 +393,6 @@ Merged summary:"""
     def chat(self, user_id, message):
         """Process a chat message and return the response"""
         with self.app.app_context():
-            from models import ChatMessage, AgentConfig, Resume, User, db
-            from app import get_llm
-            from langchain.agents import create_tool_calling_agent, AgentExecutor
-            from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-
             # Session boundary check
             if self.detect_session_boundary(user_id):
                 try:
@@ -332,19 +423,17 @@ Merged summary:"""
             system_prompt = build_system_prompt(user, resume, config)
             chat_history = self.get_conversation_history(user_id, limit=10)
 
-            # Remove the last message from history (it's the one we just saved)
-            if chat_history and len(chat_history) > 0:
+            # Exclude the message we just saved from history
+            if chat_history:
                 chat_history = chat_history[:-1]
 
-            # Create prompt template
             prompt = ChatPromptTemplate.from_messages([
                 ("system", system_prompt),
                 MessagesPlaceholder(variable_name="chat_history"),
                 ("human", "{input}"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
             ])
-
-            # Create agent
+            # logger.info(f"prompt: {prompt}")
             agent = create_tool_calling_agent(llm, tools, prompt)
             agent_executor = AgentExecutor(
                 agent=agent,
@@ -355,12 +444,12 @@ Merged summary:"""
                 verbose=False
             )
 
-            # Execute
             try:
                 result = agent_executor.invoke({
                     "input": message,
                     "chat_history": chat_history
                 })
+                # logger.info(f"Agent execution result: {result}")
                 response_text = result.get("output", "I'm sorry, I couldn't process your request.")
             except Exception as e:
                 logger.error(f"Agent execution error: {e}")
