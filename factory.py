@@ -11,12 +11,44 @@ Creates and configures the Flask application.
 import json
 import os
 
+import numpy as np
 from flask import Flask
 from flask_login import LoginManager
 from flask_migrate import Migrate
+from langchain.globals import set_llm_cache
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_core.caches import BaseCache
 
 from models import db, User
 from config import config
+
+
+class SemanticCache(BaseCache):
+    def __init__(self, embedding_model, score_threshold: float = 0.90):
+        self._embed = embedding_model
+        self._threshold = score_threshold
+        self._store = []  # list of (vector, llm_string, response)
+
+    @staticmethod
+    def _cosine(a, b) -> float:
+        a, b = np.array(a), np.array(b)
+        denom = np.linalg.norm(a) * np.linalg.norm(b)
+        return float(np.dot(a, b) / denom) if denom else 0.0
+
+    def lookup(self, prompt: str, llm_string: str):
+        query_vec = self._embed.embed_query(prompt)
+        for stored_vec, stored_llm, response in self._store:
+            if stored_llm != llm_string:
+                continue
+            if self._cosine(query_vec, stored_vec) >= self._threshold:
+                return response
+        return None
+
+    def update(self, prompt: str, llm_string: str, return_val) -> None:
+        self._store.append((self._embed.embed_query(prompt), llm_string, return_val))
+
+    def clear(self, **kwargs) -> None:
+        self._store = []
 
 login_manager = LoginManager()
 migrate = Migrate()
@@ -32,6 +64,18 @@ def create_app(config_name='default', skip_api_check=False):
     """
     app = Flask(__name__)
     app.config.from_object(config[config_name])
+
+    # ── Semantic LLM Cache ────────────────────────────────────────────────────
+    # InMemorySemanticCache embeds every incoming prompt and finds cached responses
+    # whose meaning is close enough (cosine similarity >= 0.90).
+    # This means rephrased queries like "analyze my resume" and "review my CV"
+    # both hit the same cached response — unlike exact-match caching.
+    # Uses the same HuggingFace embedding model already used for job matching.
+    _cache_embeddings = HuggingFaceEmbeddings()
+    set_llm_cache(SemanticCache(
+        embedding_model=_cache_embeddings,
+        score_threshold=0.90
+    ))
 
     # ── Extensions ────────────────────────────────────────────────────────────
     db.init_app(app)
