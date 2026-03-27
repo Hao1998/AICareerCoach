@@ -114,7 +114,7 @@
                            class="bg-blue-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">
                             View Details
                         </a>
-                        <button onclick="checkJobMatch({{ job.id }})" class="bg-green-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition">
+                        <button onclick='checkJobMatch({{ job.id }}, {{ job.title|tojson }}, {{ job.company|tojson }})' class="bg-green-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition">
                             Do I match this job?
                         </button>
                         <form action="/jobs/{{ job.id }}/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete this job posting?');" class="inline">
@@ -137,125 +137,276 @@
 
     <!-- Match Result Modal -->
     <div id="matchModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-        <div class="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div class="p-6">
-                <div class="flex justify-between items-start mb-4">
-                    <h2 class="text-2xl font-bold text-gray-800">Job Match Analysis</h2>
-                    <button onclick="closeModal()" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+        <div class="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+            <!-- Modal header -->
+            <div class="flex justify-between items-start p-6 pb-0 flex-shrink-0">
+                <div>
+                    <h2 class="text-2xl font-bold text-gray-800" id="modalJobTitle">Job Analysis</h2>
+                    <p class="text-sm text-gray-500 mt-0.5" id="modalJobCompany"></p>
                 </div>
-                <div id="modalContent" class="space-y-4">
+                <button onclick="closeModal()" class="text-gray-400 hover:text-gray-700 text-2xl leading-none ml-4">&times;</button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex border-b border-gray-200 px-6 mt-4 flex-shrink-0">
+                <button id="tabBtnMatch" onclick="switchTab('match')"
+                    class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-blue-600 text-blue-600 -mb-px">
+                    Match Analysis
+                </button>
+                <button id="tabBtnTailor" onclick="switchTab('tailor')"
+                    class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px ml-2">
+                    Tailor Resume
+                </button>
+            </div>
+
+            <!-- Tab content (scrollable) -->
+            <div class="overflow-y-auto flex-1 p-6">
+                <!-- Match Analysis tab -->
+                <div id="tabMatch" class="space-y-4">
                     <div class="flex justify-center py-8">
                         <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
                     </div>
+                </div>
+
+                <!-- Tailor Resume tab -->
+                <div id="tabTailor" class="hidden space-y-4">
+                    <div id="tailorContent"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        const { motion } = window.Motion;
+        let _currentJobId = null;
+        let _tailorLoaded = false;
 
-        const container = document.getElementById('container');
-        motion(container, {
-            initial: { opacity: 0, y: 50 },
-            animate: { opacity: 1, y: 0 },
-            transition: { duration: 0.5, ease: "easeOut" }
-        });
+        // ── Page animation (wrapped so any CDN failure can't break the page) ──
+        try {
+            const { motion } = window.Motion;
+            const container = document.getElementById('container');
+            motion(container, {
+                initial: { opacity: 0, y: 50 },
+                animate: { opacity: 1, y: 0 },
+                transition: { duration: 0.5, ease: "easeOut" }
+            });
+        } catch (e) { /* framer-motion unavailable — skip animation */ }
 
-        function closeModal() {
-            document.getElementById('matchModal').classList.add('hidden');
+        // ── Helpers ───────────────────────────────────────────────────────────
+        function scoreColor(s) {
+            return s >= 80 ? {bg:'bg-green-100',border:'border-green-200',text:'text-green-800'}
+                 : s >= 60 ? {bg:'bg-yellow-100',border:'border-yellow-200',text:'text-yellow-800'}
+                 :           {bg:'bg-orange-100',border:'border-orange-200',text:'text-orange-800'};
         }
 
-        function checkJobMatch(jobId) {
-            const modal = document.getElementById('matchModal');
-            const modalContent = document.getElementById('modalContent');
+        function chipList(items, colorClass) {
+            return items.map(i => `<span class="px-3 py-1 ${colorClass} text-sm rounded-full">${i}</span>`).join('');
+        }
 
-            // Show modal with loading state
-            modal.classList.remove('hidden');
-            modalContent.innerHTML = `
-                <div class="flex justify-center py-8">
-                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-                </div>
-                <p class="text-center text-gray-600">Analyzing your match with this job...</p>
-            `;
+        function spinner(msg) {
+            return `<div class="flex flex-col items-center py-10 gap-3">
+                        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                        <p class="text-gray-500 text-sm">${msg}</p>
+                    </div>`;
+        }
 
-            // Make API call
-            fetch(`/api/jobs/${jobId}/match`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                }
-            })
-            .then(response => response.json())
+        function errBlock(msg) {
+            return `<div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                        <p class="text-red-800 font-semibold">Error</p>
+                        <p class="text-red-600">${msg}</p>
+                    </div>`;
+        }
+
+        // ── Tab switching ─────────────────────────────────────────────────────
+        function switchTab(tab) {
+            const isMatch = tab === 'match';
+            document.getElementById('tabMatch').classList.toggle('hidden', !isMatch);
+            document.getElementById('tabTailor').classList.toggle('hidden', isMatch);
+
+            document.getElementById('tabBtnMatch').className =
+                'tab-btn px-4 py-2 text-sm font-medium border-b-2 -mb-px ' +
+                (isMatch ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 ml-2');
+            document.getElementById('tabBtnTailor').className =
+                'tab-btn px-4 py-2 text-sm font-medium border-b-2 -mb-px ml-2 ' +
+                (!isMatch ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700');
+
+            if (!isMatch && !_tailorLoaded) {
+                loadTailoring(_currentJobId);
+            }
+        }
+
+        // ── Modal open / close ────────────────────────────────────────────────
+        function closeModal() {
+            document.getElementById('matchModal').classList.add('hidden');
+            _currentJobId = null;
+            _tailorLoaded = false;
+        }
+
+        // ── Match Analysis tab ────────────────────────────────────────────────
+        function checkJobMatch(jobId, jobTitle, jobCompany) {
+            _currentJobId = jobId;
+            _tailorLoaded = false;
+
+            // Reset tailor tab
+            document.getElementById('tailorContent').innerHTML = '';
+            switchTab('match');
+
+            document.getElementById('modalJobTitle').textContent = jobTitle || 'Job Analysis';
+            document.getElementById('modalJobCompany').textContent = jobCompany || '';
+            document.getElementById('matchModal').classList.remove('hidden');
+            document.getElementById('tabMatch').innerHTML = spinner('Analyzing your match with this job...');
+
+            fetch(`/api/jobs/${jobId}/match`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+            .then(r => r.json())
             .then(data => {
                 if (data.error) {
-                    modalContent.innerHTML = `
-                        <div class="bg-red-50 border border-red-200 rounded-lg p-4">
-                            <p class="text-red-800 font-semibold">Error</p>
-                            <p class="text-red-600">\${data.error}</p>
-                        </div>
-                        <button onclick="closeModal()" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition mt-4">
-                            Close
-                        </button>
-                    `;
-                } else {
-                    const matchScore = data.match_score || 0;
-                    const scoreColor = matchScore >= 80 ? 'green' : matchScore >= 60 ? 'yellow' : 'orange';
-                    const scoreBgColor = matchScore >= 80 ? 'bg-green-100' : matchScore >= 60 ? 'bg-yellow-100' : 'bg-orange-100';
-                    const scoreTextColor = matchScore >= 80 ? 'text-green-800' : matchScore >= 60 ? 'text-yellow-800' : 'text-orange-800';
-
-                    modalContent.innerHTML = `
-                        <div class="\${scoreBgColor} border border-\${scoreColor}-200 rounded-lg p-6 text-center">
-                            <p class="text-sm \${scoreTextColor} font-semibold mb-2">Match Score</p>
-                            <p class="text-5xl font-bold \${scoreTextColor}">${matchScore.toFixed(1)}%</p>
-                        </div>
-
-                        ${data.matched_skills && data.matched_skills.length > 0 ? `
-                        <div class="bg-green-50 border border-green-200 rounded-lg p-4">
-                            <p class="text-green-800 font-semibold mb-2">✓ Matched Skills</p>
-                            <div class="flex flex-wrap gap-2">
-                                ${data.matched_skills.map(skill => `
-                                    <span class="px-3 py-1 bg-green-200 text-green-800 text-sm rounded-full">${skill}</span>
-                                `).join('')}
-                            </div>
-                        </div>
-                        ` : ''}
-
-                        ${data.skill_gaps && data.skill_gaps.length > 0 ? `
-                        <div class="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                            <p class="text-orange-800 font-semibold mb-2">⚠ Skills to Develop</p>
-                            <div class="flex flex-wrap gap-2">
-                                ${data.skill_gaps.map(skill => `
-                                    <span class="px-3 py-1 bg-orange-200 text-orange-800 text-sm rounded-full">${skill}</span>
-                                `).join('')}
-                            </div>
-                        </div>
-                        ` : ''}
-
-                        ${data.recommendation ? `
-                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                            <p class="text-blue-800 font-semibold mb-2">💡 Recommendation</p>
-                            <p class="text-blue-700">${data.recommendation}</p>
-                        </div>
-                        ` : ''}
-
-                        <button onclick="closeModal()" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">
-                            Close
-                        </button>
-                    `;
+                    document.getElementById('tabMatch').innerHTML = errBlock(data.error);
+                    return;
                 }
-            })
-            .catch(error => {
-                modalContent.innerHTML = `
-                    <div class="bg-red-50 border border-red-200 rounded-lg p-4">
-                        <p class="text-red-800 font-semibold">Error</p>
-                        <p class="text-red-600">Failed to analyze job match. Please try again.</p>
+                const s = data.match_score || 0;
+                const c = scoreColor(s);
+                document.getElementById('tabMatch').innerHTML = `
+                    <div class="${c.bg} ${c.border} border rounded-lg p-6 text-center">
+                        <p class="text-sm ${c.text} font-semibold mb-1">Match Score</p>
+                        <p class="text-5xl font-bold ${c.text}">${s.toFixed(1)}%</p>
                     </div>
-                    <button onclick="closeModal()" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition mt-4">
-                        Close
-                    </button>
+                    ${data.matched_skills && data.matched_skills.length ? `
+                    <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+                        <p class="text-green-800 font-semibold mb-2">✓ Matched Skills</p>
+                        <div class="flex flex-wrap gap-2">${chipList(data.matched_skills, 'bg-green-200 text-green-800')}</div>
+                    </div>` : ''}
+                    ${data.skill_gaps && data.skill_gaps.length ? `
+                    <div class="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                        <p class="text-orange-800 font-semibold mb-2">⚠ Skills to Develop</p>
+                        <div class="flex flex-wrap gap-2">${chipList(data.skill_gaps, 'bg-orange-200 text-orange-800')}</div>
+                    </div>` : ''}
+                    ${data.recommendation ? `
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <p class="text-blue-800 font-semibold mb-2">💡 Recommendation</p>
+                        <p class="text-blue-700">${data.recommendation}</p>
+                    </div>` : ''}
+                    <p class="text-center text-sm text-gray-400">Switch to <strong>Tailor Resume</strong> to get an ATS-optimized version of your resume for this role.</p>
                 `;
+            })
+            .catch(() => {
+                document.getElementById('tabMatch').innerHTML = errBlock('Failed to analyze job match. Please try again.');
             });
+        }
+
+        // ── Tailor Resume tab ─────────────────────────────────────────────────
+        function loadTailoring(jobId, forceRefresh) {
+            const el = document.getElementById('tailorContent');
+            el.innerHTML = spinner('Running ATS optimization — this may take 15–30 seconds...');
+
+            const body = forceRefresh ? JSON.stringify({ refresh: true }) : '{}';
+            fetch(`/api/jobs/${jobId}/tailor`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body
+            })
+            .then(r => r.json())
+            .then(data => {
+                _tailorLoaded = true;
+                if (data.error) { el.innerHTML = errBlock(data.error); return; }
+                el.innerHTML = renderTailoring(data);
+            })
+            .catch(() => {
+                el.innerHTML = errBlock('Failed to tailor resume. Please try again.');
+            });
+        }
+
+        function renderTailoring(data) {
+            const t = data.tailoring;
+            const ka = t.keyword_analysis || {};
+            const sc = t.ats_score || {};
+            const ts = t.tailored_sections || {};
+            const before = sc.before || 0;
+            const after  = sc.after  || 0;
+            const delta  = after - before;
+            const deltaLabel = delta >= 0 ? `+${delta}` : `${delta}`;
+            const deltaColor = delta >= 0 ? 'text-green-600' : 'text-red-500';
+
+            const bullets = (ts.experience_bullets || []).map(b => `
+                <div class="border border-gray-200 rounded-lg overflow-hidden text-sm">
+                    <div class="bg-gray-50 px-4 py-2 text-gray-500 text-xs font-medium uppercase tracking-wide">Before</div>
+                    <p class="px-4 py-3 text-gray-700">${b.original || ''}</p>
+                    <div class="bg-blue-50 px-4 py-2 text-blue-600 text-xs font-medium uppercase tracking-wide border-t border-gray-200">After</div>
+                    <p class="px-4 py-3 text-blue-900 font-medium">${b.tailored || ''}</p>
+                </div>`).join('');
+
+            const recs = (t.recommendations || []).map(r => `
+                <li class="flex gap-2 text-sm text-gray-700"><span class="text-blue-500 mt-0.5 flex-shrink-0">→</span>${r}</li>`).join('');
+
+            return `
+                ${data.cached ? '<p class="text-xs text-gray-400 text-right -mt-2 mb-2">Cached result · <button class="text-blue-500 underline" onclick="loadTailoring(_currentJobId, true)">Refresh</button></p>' : ''}
+
+                <!-- ATS Score -->
+                <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-5">
+                    <p class="text-sm text-gray-600 font-medium mb-3">ATS Keyword Match Score</p>
+                    <div class="flex items-center gap-6">
+                        <div class="text-center">
+                            <p class="text-xs text-gray-400 mb-1">Before</p>
+                            <p class="text-4xl font-bold text-gray-500">${before}%</p>
+                        </div>
+                        <div class="text-3xl text-gray-400">→</div>
+                        <div class="text-center">
+                            <p class="text-xs text-gray-400 mb-1">After</p>
+                            <p class="text-4xl font-bold text-blue-700">${after}%</p>
+                        </div>
+                        <div class="ml-auto text-center">
+                            <p class="text-xs text-gray-400 mb-1">Improvement</p>
+                            <p class="text-3xl font-bold ${deltaColor}">${deltaLabel} pts</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Keywords -->
+                ${(ka.missing_from_resume || []).length ? `
+                <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <p class="text-red-800 font-semibold mb-2 text-sm">Missing Keywords (add these to your resume)</p>
+                    <div class="flex flex-wrap gap-2">${chipList(ka.missing_from_resume, 'bg-red-100 text-red-700')}</div>
+                </div>` : ''}
+
+                ${(ka.present_in_resume || []).length ? `
+                <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <p class="text-green-800 font-semibold mb-2 text-sm">Keywords Already Present</p>
+                    <div class="flex flex-wrap gap-2">${chipList(ka.present_in_resume, 'bg-green-100 text-green-700')}</div>
+                </div>` : ''}
+
+                <!-- Tailored Summary -->
+                ${ts.professional_summary ? `
+                <div class="border border-gray-200 rounded-lg p-4">
+                    <p class="font-semibold text-gray-800 mb-2 text-sm">Tailored Professional Summary</p>
+                    <p class="text-gray-700 text-sm leading-relaxed italic">"${ts.professional_summary}"</p>
+                </div>` : ''}
+
+                <!-- Skills -->
+                ${(ts.skills || []).length ? `
+                <div class="border border-gray-200 rounded-lg p-4">
+                    <p class="font-semibold text-gray-800 mb-2 text-sm">Optimized Skills Section</p>
+                    <div class="flex flex-wrap gap-2">${chipList(ts.skills, 'bg-blue-100 text-blue-800')}</div>
+                </div>` : ''}
+
+                <!-- Bullets -->
+                ${bullets ? `
+                <div>
+                    <p class="font-semibold text-gray-800 mb-2 text-sm">Rewritten Experience Bullets</p>
+                    <div class="space-y-3">${bullets}</div>
+                </div>` : ''}
+
+                <!-- Recommendations -->
+                ${recs ? `
+                <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <p class="text-yellow-800 font-semibold mb-2 text-sm">Actionable Recommendations</p>
+                    <ul class="space-y-1">${recs}</ul>
+                </div>` : ''}
+
+                <!-- Formatting tips -->
+                ${t.ats_formatting_tips ? `
+                <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <p class="text-gray-700 font-semibold mb-1 text-sm">ATS Formatting Tips</p>
+                    <p class="text-gray-600 text-sm">${t.ats_formatting_tips}</p>
+                </div>` : ''}
+            `;
         }
     </script>
 </body>

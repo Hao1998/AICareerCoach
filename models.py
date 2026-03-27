@@ -145,6 +145,7 @@ class JobMatch(db.Model):
     agent_run_id = db.Column(db.Integer, db.ForeignKey('agent_run_history.id'), nullable=True)
     user_feedback = db.Column(db.String(50))  # 'interested', 'not_interested', 'applied', etc.
     feedback_at = db.Column(db.DateTime)
+    tailoring_result = db.Column(db.Text, nullable=True)  # Cached JSON from ATS resume tailoring
 
     job = db.relationship('JobPosting', backref='matches')
 
@@ -160,7 +161,8 @@ class JobMatch(db.Model):
             'agent_generated': self.agent_generated,
             'user_feedback': self.user_feedback,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'job': self.job.to_dict() if self.job else None
+            'job': self.job.to_dict() if self.job else None,
+            'tailoring_result': json.loads(self.tailoring_result) if self.tailoring_result else None
         }
 
 

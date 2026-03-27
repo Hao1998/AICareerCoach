@@ -14,7 +14,7 @@ from models import db, JobPosting, JobMatch, Resume, AgentConfig
 from job_fetcher import fetch_jobs_from_adzuna
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import extract_text_from_pdf
-from services.llm_service import get_resume_analysis_chain, get_job_matching_chain
+from services.llm_service import get_resume_analysis_chain, get_job_matching_chain, get_resume_tailoring_chain
 from services.job_service import find_matching_jobs
 
 job_bp = Blueprint('jobs', __name__)
@@ -270,4 +270,75 @@ def check_job_match(job_id):
 
     except Exception as e:
         print(f"Error in check_job_match: {e}")
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
+
+@job_bp.route('/api/jobs/<int:job_id>/tailor', methods=['POST'])
+@login_required
+def tailor_resume_for_job(job_id):
+    """ATS-optimize the user's resume for a specific job. Caches result in JobMatch."""
+    try:
+        job = JobPosting.query.get(job_id)
+        if not job or not job.is_active:
+            return jsonify({"error": "Job not found or is no longer active"}), 404
+
+        latest_resume = current_user.resumes.filter_by(is_active=True).order_by(
+            Resume.uploaded_at.desc()
+        ).first()
+        if not latest_resume:
+            return jsonify({"error": "No resume found. Please upload your resume first."}), 400
+
+        # Return cached result if available
+        force_refresh = request.get_json(silent=True, force=True) or {}
+        force_refresh = force_refresh.get('refresh', False)
+
+        existing_match = JobMatch.query.filter_by(
+            user_id=current_user.id,
+            resume_id=latest_resume.id,
+            job_id=job.id
+        ).first()
+
+        if existing_match and existing_match.tailoring_result and not force_refresh:
+            return jsonify({
+                "cached": True,
+                "job": {"id": job.id, "title": job.title, "company": job.company},
+                "tailoring": json.loads(existing_match.tailoring_result)
+            })
+
+        # Run tailoring chain
+        resume_text = extract_text_from_pdf(latest_resume.file_path)
+        result = get_resume_tailoring_chain().invoke({
+            "resume": resume_text[:4000],
+            "job_title": job.title,
+            "company": job.company or "the company",
+            "job_description": (job.description or "")[:2000],
+            "job_requirements": (job.requirements or "")[:1500],
+        })
+        raw = result.get('text', str(result)).strip()
+
+        # Strip markdown code fences if present
+        if raw.startswith('```'):
+            raw = raw.split('```')[1]
+            if raw.startswith('json'):
+                raw = raw[4:]
+            raw = raw.strip()
+
+        try:
+            tailoring = json.loads(raw)
+        except json.JSONDecodeError:
+            return jsonify({"error": "Failed to parse tailoring result. Please try again."}), 500
+
+        # Cache on existing match if one exists
+        if existing_match:
+            existing_match.tailoring_result = json.dumps(tailoring)
+            db.session.commit()
+
+        return jsonify({
+            "cached": False,
+            "job": {"id": job.id, "title": job.title, "company": job.company},
+            "tailoring": tailoring
+        })
+
+    except Exception as e:
+        print(f"Error in tailor_resume_for_job: {e}")
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
