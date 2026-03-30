@@ -11,9 +11,11 @@ Creates and configures the Flask application.
 import json
 import os
 
-from flask import Flask
-from flask_login import LoginManager
+from flask import Flask, jsonify
+from flask_login import LoginManager, current_user
 from flask_migrate import Migrate
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from langchain.globals import set_llm_cache
 from langchain.embeddings import HuggingFaceEmbeddings
 
@@ -23,6 +25,16 @@ from services.semantic_cache import SemanticCache
 
 login_manager = LoginManager()
 migrate = Migrate()
+
+
+def _rate_limit_key():
+    """Use authenticated user ID as the rate-limit key, fall back to IP."""
+    if current_user.is_authenticated:
+        return f"user:{current_user.id}"
+    return get_remote_address()
+
+
+limiter = Limiter(key_func=_rate_limit_key, default_limits=[])
 
 
 def create_app(config_name='default', skip_api_check=False):
@@ -44,13 +56,15 @@ def create_app(config_name='default', skip_api_check=False):
     _cache_embeddings = HuggingFaceEmbeddings()
     set_llm_cache(SemanticCache(
         embedding_model=_cache_embeddings,
-        score_threshold=0.90
+        score_threshold=0.90,
+        ttl_seconds=3600  # cached responses expire after 1 hour
     ))
 
     # ── Extensions ────────────────────────────────────────────────────────────
     db.init_app(app)
     migrate.init_app(app, db)
     login_manager.init_app(app)
+    limiter.init_app(app)
 
     login_manager.login_view = 'auth.login'
     login_manager.login_message = 'Please log in to access this page.'

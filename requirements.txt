@@ -20,5 +20,6 @@ transformers
 pydantic>=2.7.4
 requests
 APScheduler>=3.10.0
+Flask-Limiter>=3.5.0
 
 

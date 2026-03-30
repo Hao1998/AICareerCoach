@@ -3,6 +3,7 @@ Job Utilities - Shared functions for job embedding and FAISS indexing
 """
 
 import os
+import threading
 from datetime import datetime
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS
@@ -15,6 +16,10 @@ from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similar
 embeddings = HuggingFaceEmbeddings()
 
 JOB_VECTOR_INDEX = 'job_vector_index'
+
+# Prevents concurrent threads from writing the FAISS index at the same time,
+# which would corrupt index.faiss / index.pkl if writes interleave.
+_index_rebuild_lock = threading.Lock()
 
 def compute_job_embedding(job):
     """Compute and store embedding for a single job"""
@@ -39,34 +44,35 @@ def compute_all_job_embeddings():
 
 def build_job_faiss_index():
     """Build FAISS index from all active job embeddings for fast similarity search"""
-    # First ensure all jobs have embeddings
-    compute_all_job_embeddings()
+    with _index_rebuild_lock:
+        # First ensure all jobs have embeddings
+        compute_all_job_embeddings()
 
-    # Get all active jobs with embeddings
-    jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
+        # Get all active jobs with embeddings
+        jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
 
-    if not jobs:
-        print("No jobs available to build index")
-        return None
+        if not jobs:
+            print("No jobs available to build index")
+            return None
 
-    # Extract embeddings and metadata
-    job_texts = [job.get_job_text() for job in jobs]
-    job_embeddings = [job.embedding for job in jobs]
-    job_metadatas = [{"job_id": job.id} for job in jobs]
+        # Extract embeddings and metadata
+        job_texts = [job.get_job_text() for job in jobs]
+        job_embeddings = [job.embedding for job in jobs]
+        job_metadatas = [{"job_id": job.id} for job in jobs]
 
-    # Create FAISS vector store
-    vectorstore = FAISS.from_embeddings(
-        text_embeddings=list(zip(job_texts, job_embeddings)),
-        embedding=embeddings,
-        metadatas=job_metadatas,
-        distance_metric="cosine"
-    )
+        # Create FAISS vector store
+        vectorstore = FAISS.from_embeddings(
+            text_embeddings=list(zip(job_texts, job_embeddings)),
+            embedding=embeddings,
+            metadatas=job_metadatas,
+            distance_metric="cosine"
+        )
 
-    # Save to disk
-    vectorstore.save_local(JOB_VECTOR_INDEX)
-    print(f"Built FAISS index for {len(jobs)} jobs")
+        # Save to disk
+        vectorstore.save_local(JOB_VECTOR_INDEX)
+        print(f"Built FAISS index for {len(jobs)} jobs")
 
-    return vectorstore
+        return vectorstore
 
 
 def get_job_faiss_index():

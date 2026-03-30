@@ -7,10 +7,17 @@ Blueprint: 'chat'
 
 from flask import Blueprint, request, render_template, jsonify, current_app
 from flask_login import login_required, current_user
+from flask_limiter.errors import RateLimitExceeded
 
+from factory import limiter
 from models import db, ChatMessage
 
 chat_bp = Blueprint('chat', __name__)
+
+
+@chat_bp.errorhandler(RateLimitExceeded)
+def handle_rate_limit(e):
+    return jsonify({"success": False, "error": "Too many messages. Please slow down."}), 429
 
 _chatbot = None
 
@@ -26,6 +33,7 @@ def _get_chatbot():
 
 @chat_bp.route('/api/chat', methods=['POST'])
 @login_required
+@limiter.limit("20 per minute; 200 per day")
 def chat_api():
     try:
         data = request.get_json()
