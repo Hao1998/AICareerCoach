@@ -44,7 +44,8 @@ def create_app(config_name='default', skip_api_check=False):
     _cache_embeddings = HuggingFaceEmbeddings()
     set_llm_cache(SemanticCache(
         embedding_model=_cache_embeddings,
-        score_threshold=0.90
+        score_threshold=0.90,
+        ttl_seconds=3600  # cached responses expire after 1 hour
     ))
 
     # ── Extensions ────────────────────────────────────────────────────────────
