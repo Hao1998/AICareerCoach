@@ -122,7 +122,7 @@ class AgentScheduler:
 
                 logger.info(f"Running agent for {len(user_configs)} users at {schedule_time} ({timezone_str or 'UTC'})")
                 # Create agent instance
-                agent = self.agent_class(self.app.app_context())
+                agent = self.agent_class(self.app)
 
                 # Run for each user at this time
                 results = []
@@ -171,12 +171,11 @@ class AgentScheduler:
         logger.info(f"Manual agent run triggered for user {user_id}")
 
         try:
-            with self.app.app_context():
-                # Create agent instance
-                agent = self.agent_class(self.app.app_context())
+            # Create agent instance
+            agent = self.agent_class(self.app)
 
-                # Run for specific user
-                result = agent.run_for_user(user_id, run_type='manual')
+            # Run for specific user (run_for_user manages its own app context)
+            result = agent.run_for_user(user_id, run_type='manual')
 
                 logger.info(f"Manual agent run completed for user {user_id}: {result['status']}")
 
