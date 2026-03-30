@@ -31,14 +31,14 @@ class JobScoutAgent:
     - Learning from feedback (adjusts based on user preferences)
     """
 
-    def __init__(self, app_context):
+    def __init__(self, app):
         """
         Initialize the Job Scout Agent
 
         Args:
-            app_context: Flask application context for database access
+            app: Flask application instance
         """
-        self.app_context = app_context
+        self.app = app
 
         # Initialize LLM for job analysis
         xai_api_key = os.getenv("XAI_API_KEY")
@@ -103,7 +103,7 @@ Return ONLY valid JSON in this format:
         Returns:
             dict: Results summary with stats
         """
-        with self.app_context:
+        with self.app.app_context():
             # Create run history record
             run_history = AgentRunHistory(
                 user_id=user_id,
@@ -433,7 +433,7 @@ Job titles:"""
 
         This would be called by the scheduler daily
         """
-        with self.app_context:
+        with self.app.app_context():
             # Get all users with enabled agents
             configs = AgentConfig.query.filter_by(is_enabled=True).all()
 
