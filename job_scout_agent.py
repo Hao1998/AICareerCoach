@@ -10,6 +10,7 @@ This agent runs autonomously to:
 
 import os
 import json
+import threading
 from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from job_fetcher import AdzunaJobFetcher
@@ -18,6 +19,48 @@ from langchain.prompts import PromptTemplate
 from langchain_xai import ChatXAI
 import PyPDF2
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# In-memory progress store
+# Each manual run writes events here; the SSE endpoint reads them.
+# Key: run_id (int)  Value: {"events": [...], "done": bool}
+# ---------------------------------------------------------------------------
+_run_progress: dict = {}
+_progress_lock = threading.Lock()
+
+
+def _init_run_progress(run_id: int):
+    with _progress_lock:
+        _run_progress[run_id] = {"events": [], "done": False}
+
+
+def _emit_progress(run_id: int, message: str):
+    with _progress_lock:
+        if run_id in _run_progress:
+            _run_progress[run_id]["events"].append({
+                "message": message,
+                "ts": datetime.utcnow().strftime("%H:%M:%S")
+            })
+
+
+def _mark_done(run_id: int):
+    with _progress_lock:
+        if run_id in _run_progress:
+            _run_progress[run_id]["done"] = True
+
+
+def get_run_events(run_id: int, since: int = 0):
+    """Return (new_events_list, is_done). Thread-safe."""
+    with _progress_lock:
+        store = _run_progress.get(run_id)
+        if not store:
+            return [], True
+        return store["events"][since:], store["done"]
+
+
+def cleanup_run_progress(run_id: int):
+    with _progress_lock:
+        _run_progress.pop(run_id, None)
 
 
 class JobScoutAgent:
@@ -85,44 +128,46 @@ Return ONLY valid JSON in this format:
                 text += reader.pages[page_num].extract_text()
         return text
 
-    def run_for_user(self, user_id, run_type='manual'):
+    def run_for_user(self, user_id, run_type='manual', existing_run_id=None):
         """
-        Run the job scout agent for a specific user
-
-        This is the main autonomous agent loop that:
-        1. Decides what jobs to fetch based on user's resume
-        2. Fetches new jobs using external API
-        3. Analyzes matches using AI
-        4. Filters and saves results
-        5. Learns from past feedback
+        Run the job scout agent for a specific user.
 
         Args:
             user_id: User ID to run agent for
             run_type: 'manual' or 'scheduled'
+            existing_run_id: If provided, update this AgentRunHistory record
+                             instead of creating a new one (used by async trigger)
 
         Returns:
             dict: Results summary with stats
         """
         with self.app.app_context():
-            # Create run history record
-            run_history = AgentRunHistory(
-                user_id=user_id,
-                run_type=run_type,
-                status='running',
-                started_at=datetime.utcnow()
-            )
-            db.session.add(run_history)
-            db.session.commit()
+            if existing_run_id:
+                run_history = AgentRunHistory.query.get(existing_run_id)
+                if not run_history:
+                    return {'status': 'failed', 'error': 'Run record not found'}
+            else:
+                run_history = AgentRunHistory(
+                    user_id=user_id,
+                    run_type=run_type,
+                    status='running',
+                    started_at=datetime.utcnow()
+                )
+                db.session.add(run_history)
+                db.session.commit()
+
+            run_id = run_history.id
+            _emit_progress(run_id, "Job Scout Agent starting...")
 
             try:
                 # Get user and config
+                _emit_progress(run_id, "Loading user profile and configuration...")
                 user = User.query.get(user_id)
                 if not user:
                     raise Exception(f"User {user_id} not found")
 
                 config = AgentConfig.query.filter_by(user_id=user_id).first()
                 if not config:
-                    # Create default config if not exists
                     config = AgentConfig(user_id=user_id)
                     db.session.add(config)
                     db.session.commit()
@@ -135,9 +180,12 @@ Return ONLY valid JSON in this format:
                         'message': 'Agent is disabled for this user'
                     })
                     db.session.commit()
+                    _emit_progress(run_id, "Agent is disabled — skipping.")
+                    _mark_done(run_id)
                     return {'status': 'disabled', 'message': 'Agent is disabled'}
 
                 # DECISION 1: Get user's latest resume
+                _emit_progress(run_id, "Reading your resume...")
                 latest_resume = Resume.query.filter_by(
                     user_id=user_id,
                     is_active=True
@@ -146,25 +194,26 @@ Return ONLY valid JSON in this format:
                 if not latest_resume:
                     raise Exception("No resume found for user")
 
-                # Extract resume text
                 resume_text = self.extract_text_from_pdf(latest_resume.file_path)
 
                 # DECISION 2: Determine what jobs to fetch based on resume
-                # Agent autonomously decides keywords from resume
+                _emit_progress(run_id, "Extracting job search keywords from your resume...")
                 keywords = self._extract_keywords_from_resume(resume_text)
+                _emit_progress(run_id, f"Searching for: {keywords}")
 
                 # DECISION 3: Fetch new jobs from Adzuna
-                # Agent uses external API tool
+                _emit_progress(run_id, "Fetching new jobs from Adzuna...")
                 job_stats = self._fetch_new_jobs(keywords, config)
                 run_history.jobs_fetched = job_stats['stored']
+                _emit_progress(run_id, f"Fetched {job_stats['stored']} new jobs (skipped {job_stats['duplicates']} duplicates)")
 
                 # DECISION 4: Rebuild index if new jobs were added
                 if job_stats['stored'] > 0:
+                    _emit_progress(run_id, "Rebuilding job search index...")
                     build_job_faiss_index()
 
                 # DECISION 5: Find matching jobs using FAISS + LLM
-                # Agent analyzes matches autonomously
-                print(f"[DEBUG] Fetching jobs threadshold: {config.match_threshold}")
+                _emit_progress(run_id, "Analysing job matches against your resume...")
                 matches = self._find_and_save_matches(
                     user_id=user_id,
                     resume_id=latest_resume.id,
@@ -172,16 +221,14 @@ Return ONLY valid JSON in this format:
                     resume_filename=latest_resume.original_filename,
                     threshold=config.match_threshold,
                     max_results=config.max_results_per_run,
-                    run_history_id=run_history.id
+                    run_history_id=run_id
                 )
 
                 run_history.jobs_analyzed = len(matches['analyzed'])
                 run_history.matches_found = len(matches['saved'])
 
-                # Update config
                 config.last_run_at = datetime.utcnow()
 
-                # Complete run
                 run_history.status = 'completed'
                 run_history.completed_at = datetime.utcnow()
                 run_history.results_summary = json.dumps({
@@ -194,9 +241,12 @@ Return ONLY valid JSON in this format:
 
                 db.session.commit()
 
+                _emit_progress(run_id, f"Done! Found {len(matches['saved'])} matches from {len(matches['analyzed'])} jobs analysed.")
+                _mark_done(run_id)
+
                 return {
                     'status': 'success',
-                    'run_id': run_history.id,
+                    'run_id': run_id,
                     'jobs_fetched': job_stats['stored'],
                     'jobs_analyzed': len(matches['analyzed']),
                     'matches_found': len(matches['saved']),
@@ -204,16 +254,18 @@ Return ONLY valid JSON in this format:
                 }
 
             except Exception as e:
-                # Handle errors
                 run_history.status = 'failed'
                 run_history.completed_at = datetime.utcnow()
                 run_history.error_message = str(e)
                 db.session.commit()
 
+                _emit_progress(run_id, f"Error: {str(e)}")
+                _mark_done(run_id)
+
                 return {
                     'status': 'failed',
                     'error': str(e),
-                    'run_id': run_history.id
+                    'run_id': run_id
                 }
 
     def _extract_keywords_from_resume(self, resume_text):
@@ -321,12 +373,16 @@ Job titles:"""
                 return {'analyzed': [], 'saved': []}
 
             # Stage 2: Detailed LLM analysis for candidates
-            for doc, distance in docs_with_scores[:max_results * 2]:  # Analyze more than we need
+            candidates = docs_with_scores[:max_results * 2]
+            total_candidates = len(candidates)
+            for idx, (doc, distance) in enumerate(candidates, 1):
                 job_id = doc.metadata.get("job_id")
                 job = JobPosting.query.get(job_id)
 
                 if not job or not job.is_active:
                     continue
+
+                _emit_progress(run_history_id, f"Analysing job {idx}/{total_candidates}: {job.title} at {job.company}")
 
                 # Check if user already has this match
                 existing_match = JobMatch.query.filter_by(

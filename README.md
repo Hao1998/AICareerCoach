@@ -240,6 +240,3 @@ Potential improvements:
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
 
-## License
-
-[Add your license information here]

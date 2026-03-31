@@ -7,6 +7,7 @@ Supports both automatic scheduled runs and manual triggers.
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import logging
 import os
@@ -38,6 +39,7 @@ class AgentScheduler:
         self.agent_class = agent_class
         self.scheduler = None
         self._is_running = False
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='agent')
 
     def start(self):
         """
@@ -171,15 +173,10 @@ class AgentScheduler:
         logger.info(f"Manual agent run triggered for user {user_id}")
 
         try:
-            # Create agent instance
             agent = self.agent_class(self.app)
-
-            # Run for specific user (run_for_user manages its own app context)
             result = agent.run_for_user(user_id, run_type='manual')
-
-                logger.info(f"Manual agent run completed for user {user_id}: {result['status']}")
-
-                return result
+            logger.info(f"Manual agent run completed for user {user_id}: {result['status']}")
+            return result
 
         except Exception as e:
             logger.error(f"Error in manual agent run: {e}")
@@ -187,6 +184,39 @@ class AgentScheduler:
                 'status': 'failed',
                 'error': str(e)
             }
+
+    def trigger_manual_run_async(self, user_id):
+        """
+        Start a manual agent run in a background thread and return immediately.
+
+        Creates the AgentRunHistory record synchronously so the caller has a
+        run_id to hand to the SSE stream endpoint, then submits the heavy work
+        (job fetching + LLM analysis) to the thread pool.
+
+        Returns:
+            dict: {"status": "started", "run_id": <int>}
+        """
+        from models import AgentRunHistory, db
+        from job_scout_agent import _init_run_progress
+
+        with self.app.app_context():
+            run_history = AgentRunHistory(
+                user_id=user_id,
+                run_type='manual',
+                status='running',
+                started_at=datetime.utcnow()
+            )
+            db.session.add(run_history)
+            db.session.commit()
+            run_id = run_history.id
+
+        _init_run_progress(run_id)
+
+        agent = self.agent_class(self.app)
+        self._executor.submit(agent.run_for_user, user_id, 'manual', run_id)
+
+        logger.info(f"Async manual run submitted for user {user_id}, run_id={run_id}")
+        return {"status": "started", "run_id": run_id}
 
     def rebuild_schedule(self):
         """
