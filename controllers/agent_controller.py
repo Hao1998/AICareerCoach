@@ -5,9 +5,11 @@ Handles Job Scout Agent configuration, triggering, history, and feedback.
 Blueprint: 'agent'
 """
 
+import json
+import time
 from datetime import datetime
 
-from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app
+from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app, Response
 from flask_login import login_required, current_user
 
 from models import db, AgentConfig, AgentRunHistory, JobMatch
@@ -32,21 +34,44 @@ def trigger_agent():
                 'error': 'Please upload a resume first before running the Job Scout Agent'
             }), 400
 
-        result = _get_scheduler().trigger_manual_run(current_user.id)
-
-        if result['status'] == 'success':
-            return jsonify({
-                'success': True,
-                'message': f"Agent run completed! Found {result['matches_found']} new matches.",
-                'jobs_fetched': result['jobs_fetched'],
-                'jobs_analyzed': result['jobs_analyzed'],
-                'matches_found': result['matches_found']
-            })
-        else:
-            return jsonify({'success': False, 'error': result.get('error', 'Agent run failed')}), 500
+        result = _get_scheduler().trigger_manual_run_async(current_user.id)
+        return jsonify({'success': True, 'run_id': result['run_id']})
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@agent_bp.route('/agent/stream/<int:run_id>')
+@login_required
+def stream_agent_run(run_id):
+    """SSE endpoint — pushes progress events to the browser as they are emitted."""
+    from job_scout_agent import get_run_events, cleanup_run_progress
+
+    # Verify this run belongs to the current user
+    run = AgentRunHistory.query.filter_by(id=run_id, user_id=current_user.id).first()
+    if not run:
+        return jsonify({'error': 'Run not found'}), 404
+
+    def event_stream():
+        index = 0
+        try:
+            while True:
+                events, done = get_run_events(run_id, since=index)
+                for event in events:
+                    yield f"data: {json.dumps(event)}\n\n"
+                    index += 1
+                if done:
+                    yield f"data: {json.dumps({'done': True})}\n\n"
+                    break
+                time.sleep(0.4)
+        finally:
+            cleanup_run_progress(run_id)
+
+    return Response(
+        event_stream(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 
 @agent_bp.route('/agent/config', methods=['GET', 'POST'])

@@ -134,6 +134,20 @@
             </button>
             <p class="text-sm text-gray-500 text-center mt-2">Manually trigger the agent to search for new job matches</p>
         </div>
+
+        <!-- Live Progress Panel (hidden until a run starts) -->
+        <div id="progressPanel" class="hidden mt-4 border border-blue-200 rounded-lg bg-blue-50 p-4">
+            <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-semibold text-blue-800">Agent Running</h3>
+                <span id="progressSpinner" class="inline-block">
+                    <svg class="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </span>
+            </div>
+            <ul id="progressLog" class="space-y-1 text-xs text-blue-900 font-mono max-h-48 overflow-y-auto"></ul>
+        </div>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -278,45 +292,86 @@
 </main>
 
 <script>
-    // Check Now button handler
-    document.getElementById('checkNowBtn').addEventListener('click', async function() {
-        const button = this;
-        button.disabled = true;
-        button.innerHTML = `
-                <svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Running Agent...
-            `;
+    const checkNowBtn = document.getElementById('checkNowBtn');
+    const progressPanel = document.getElementById('progressPanel');
+    const progressLog = document.getElementById('progressLog');
+    const progressSpinner = document.getElementById('progressSpinner');
 
+    function appendLog(message, done = false) {
+        const li = document.createElement('li');
+        li.className = done ? 'text-green-700 font-semibold' : '';
+        li.textContent = done ? `✓ ${message}` : `› ${message}`;
+        progressLog.appendChild(li);
+        progressLog.scrollTop = progressLog.scrollHeight;
+    }
+
+    function resetButton() {
+        checkNowBtn.disabled = false;
+        checkNowBtn.innerHTML = `
+            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            Check for New Jobs Now`;
+    }
+
+    checkNowBtn.addEventListener('click', async function () {
+        checkNowBtn.disabled = true;
+        checkNowBtn.innerHTML = `
+            <svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            Running Agent...`;
+
+        progressLog.innerHTML = '';
+        progressPanel.classList.remove('hidden');
+        progressSpinner.classList.remove('hidden');
+
+        // Step 1: kick off the run — returns immediately with run_id
+        let runId;
         try {
-            const response = await fetch('{{ url_for("agent.trigger_agent") }}', {
+            const res = await fetch('{{ url_for("agent.trigger_agent") }}', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+                headers: { 'Content-Type': 'application/json' }
             });
-
-            const data = await response.json();
-
-            if (data.success) {
-                alert(`Success! Found ${data.matches_found} new matches from ${data.jobs_analyzed} jobs.`);
-                location.reload();
-            } else {
-                alert(`Error: ${data.error}`);
+            const data = await res.json();
+            if (!data.success) {
+                appendLog(`Error: ${data.error}`);
+                progressSpinner.classList.add('hidden');
+                resetButton();
+                return;
             }
-        } catch (error) {
-            alert(`Error: ${error.message}`);
-        } finally {
-            button.disabled = false;
-            button.innerHTML = `
-                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                    </svg>
-                    Check for New Jobs Now
-                `;
+            runId = data.run_id;
+        } catch (err) {
+            appendLog(`Error: ${err.message}`);
+            progressSpinner.classList.add('hidden');
+            resetButton();
+            return;
         }
+
+        // Step 2: open SSE stream and show live progress
+        const source = new EventSource(`/agent/stream/${runId}`);
+
+        source.onmessage = function (e) {
+            const event = JSON.parse(e.data);
+            if (event.done) {
+                source.close();
+                progressSpinner.classList.add('hidden');
+                appendLog('Agent finished — reloading page...', true);
+                resetButton();
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                appendLog(event.ts ? `[${event.ts}] ${event.message}` : event.message);
+            }
+        };
+
+        source.onerror = function () {
+            source.close();
+            progressSpinner.classList.add('hidden');
+            appendLog('Connection lost — reloading...');
+            resetButton();
+            setTimeout(() => location.reload(), 2000);
+        };
     });
 
     // Feedback handler
@@ -324,21 +379,13 @@
         try {
             const response = await fetch(`/agent/feedback/${matchId}`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ feedback: feedback })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ feedback })
             });
-
             const data = await response.json();
-
-            if (data.success) {
-                alert('Thank you for your feedback!');
-            } else {
-                alert(`Error: ${data.error}`);
-            }
-        } catch (error) {
-            alert(`Error: ${error.message}`);
+            if (!data.success) alert(`Error: ${data.error}`);
+        } catch (err) {
+            alert(`Error: ${err.message}`);
         }
     }
 </script>
