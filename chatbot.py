@@ -48,6 +48,7 @@ def build_tools(app, user_id):
     def find_top_jobs(query: str) -> str:
         """Find the top 5 matching jobs for the user based on their resume. Use this when the user asks to find jobs, get job recommendations, or match their resume to jobs. The query parameter can be a description of what kind of jobs they want."""
         with app.app_context():
+            from job_utils import cosine_similarity
             resume = Resume.query.filter_by(
                 user_id=user_id, is_active=True
             ).order_by(Resume.uploaded_at.desc()).first()
@@ -57,17 +58,39 @@ def build_tools(app, user_id):
 
             try:
                 resume_text = extract_text_from_pdf(resume.file_path)
-                matches = find_matching_jobs(resume_text, top_k=5)
+
+                # Fetch a wider candidate pool so preference re-ranking has room to work
+                candidates = find_matching_jobs(resume_text, top_k=20, candidate_k=40)
+
+                # Apply preference-based hybrid scoring if the user has feedback history
+                config = AgentConfig.query.filter_by(user_id=user_id).first()
+                preference_vector = config.preference_embedding if config else None
+                using_preferences = preference_vector is not None
+
+                scored = []
+                for m in candidates:
+                    job = m['job']
+                    base_score = m['analysis'].get('match_score', 0)
+                    if using_preferences and job.embedding is not None:
+                        pref_similarity = cosine_similarity(preference_vector, job.embedding)
+                        pref_score = (pref_similarity + 1) * 50  # map -1..1 → 0..100
+                        final_score = 0.7 * base_score + 0.3 * pref_score
+                    else:
+                        final_score = base_score
+                    scored.append({**m, 'final_score': final_score})
+
+                scored.sort(key=lambda x: x['final_score'], reverse=True)
+                top_matches = scored[:5]
 
                 jobs = []
                 job_ids = []
-                for m in matches:
+                for m in top_matches:
                     job = m['job']
                     jobs.append({
                         "id": job.id,
                         "title": job.title,
                         "company": job.company,
-                        "match_score": m['analysis'].get('match_score', 0)
+                        "match_score": round(m['final_score'], 1)
                     })
                     job_ids.append(job.id)
 
@@ -75,7 +98,8 @@ def build_tools(app, user_id):
                     "success": True,
                     "jobs": jobs,
                     "action": "redirect_to_jobs",
-                    "job_ids": job_ids
+                    "job_ids": job_ids,
+                    "personalized": using_preferences
                 })
             except Exception as e:
                 logger.error(f"find_top_jobs error: {e}")
@@ -230,11 +254,56 @@ def build_tools(app, user_id):
                 logger.error(f"tailor_resume_to_job error: {e}")
                 return json.dumps({"success": False, "error": str(e)})
 
+    @tool
+    def get_user_preferences(dummy: str = "") -> str:
+        """Show what job preferences the AI has learned from the user's feedback history. Use this when the user asks what you've learned about them, what their preferences are, or how personalization works for them."""
+        with app.app_context():
+            from models import JobMatch
+            try:
+                config = AgentConfig.query.filter_by(user_id=user_id).first()
+
+                liked = JobMatch.query.filter(
+                    JobMatch.user_id == user_id,
+                    JobMatch.user_feedback.in_(['interested', 'applied'])
+                ).order_by(JobMatch.feedback_at.desc()).limit(10).all()
+
+                disliked = JobMatch.query.filter_by(
+                    user_id=user_id,
+                    user_feedback='not_interested'
+                ).order_by(JobMatch.feedback_at.desc()).limit(5).all()
+
+                has_preferences = config and config.preference_embedding is not None
+
+                return json.dumps({
+                    "success": True,
+                    "personalization_active": has_preferences,
+                    "liked_count": len(liked),
+                    "disliked_count": len(disliked),
+                    "liked_jobs": [
+                        {"title": m.job.title, "company": m.job.company, "feedback": m.user_feedback}
+                        for m in liked if m.job
+                    ],
+                    "disliked_jobs": [
+                        {"title": m.job.title, "company": m.job.company}
+                        for m in disliked if m.job
+                    ],
+                    "message": (
+                        f"Personalization is active. I've learned your preferences from "
+                        f"{len(liked)} jobs you liked and {len(disliked)} you disliked."
+                        if has_preferences else
+                        "No preferences learned yet. Rate some job matches as 'interested' or "
+                        "'not interested' to enable personalized recommendations."
+                    )
+                })
+            except Exception as e:
+                logger.error(f"get_user_preferences error: {e}")
+                return json.dumps({"success": False, "error": str(e)})
+
     return [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches, explain_feature,
-            search_job_by_title, tailor_resume_to_job]
+            search_job_by_title, tailor_resume_to_job, get_user_preferences]
 
 
-def build_system_prompt(user, resume, agent_config):
+def build_system_prompt(user, resume, agent_config, liked_count=0, disliked_count=0):
     """Build the system prompt with user context and cross-session memory"""
     today = datetime.utcnow().strftime("%B %d, %Y")
 
@@ -249,33 +318,51 @@ def build_system_prompt(user, resume, agent_config):
     if agent_config and agent_config.conversation_summary:
         conversation_summary = f"\n\nPrevious sessions context:\n{agent_config.conversation_summary}"
 
+    has_preferences = agent_config and agent_config.preference_embedding is not None
+    if has_preferences:
+        preference_context = (
+            f"\n\nPersonalization: ACTIVE — learned from {liked_count} liked "
+            f"and {disliked_count} disliked jobs. Job recommendations are "
+            f"automatically re-ranked using a 70% resume match + 30% preference blend."
+        )
+    else:
+        preference_context = (
+            "\n\nPersonalization: NOT YET ACTIVE — the user hasn't rated any job matches yet. "
+            "Encourage them to rate matches as 'interested' or 'not interested' to enable "
+            "personalized recommendations."
+        )
+
     return f"""You are Career Coach AI, a helpful career coaching assistant for {user.full_name or user.username}.
 Today's date: {today}
 Username: {user.username}
 {resume_summary}
 {conversation_summary}
+{preference_context}
 
 You have access to the following tools to help the user:
-1. find_top_jobs - Find matching jobs based on their resume
+1. find_top_jobs - Find matching jobs based on their resume (preference-personalized if active)
 2. get_resume_info - Answer questions about their resume
 3. trigger_job_scout_agent - Run the automatic job scout agent
 4. get_recent_matches - Show recent job match results
 5. explain_feature - Explain app features
 6. search_job_by_title - Search the job database by job title/role name (returns job IDs)
 7. tailor_resume_to_job - ATS-optimize the resume for a specific job (needs job_id from search_job_by_title)
+8. get_user_preferences - Show what preferences have been learned from the user's feedback history
 
 Guidelines:
 1. Be friendly, professional, and encouraging.
 2. When asked to find jobs, use the find_top_jobs tool and present results clearly.
 3. After finding jobs, tell the user they can click the "View Matching Jobs" button to see the filtered results.
-4. When asked about skills or resume content, use get_resume_info.
-5. When asked to run the agent or scan for jobs, use trigger_job_scout_agent.
-6. Keep responses concise but informative.
-7. If the user hasn't uploaded a resume yet, guide them to do so.
-8. Use the user's career context from previous sessions to give personalized advice.
-9. When explaining features, use explain_feature tool for accurate information.
-10. If a tool returns an error, explain the issue helpfully and suggest next steps.
-11. When the user asks to tailor, adjust, or optimize their resume for a specific job title or role:
+4. If personalization is active, mention that results are personalized based on their feedback.
+5. When asked about skills or resume content, use get_resume_info.
+6. When asked to run the agent or scan for jobs, use trigger_job_scout_agent.
+7. Keep responses concise but informative.
+8. If the user hasn't uploaded a resume yet, guide them to do so.
+9. Use the user's career context from previous sessions to give personalized advice.
+10. When explaining features, use explain_feature tool for accurate information.
+11. If a tool returns an error, explain the issue helpfully and suggest next steps.
+12. When the user asks what you've learned about them or about their preferences, use get_user_preferences.
+13. When the user asks to tailor, adjust, or optimize their resume for a specific job title or role:
     a. ALWAYS call search_job_by_title first to find matching jobs in the database.
     b. If jobs are found, pick the best match and call tailor_resume_to_job with its ID.
     c. Present the results clearly: show the ATS score improvement, missing keywords, the tailored Professional Summary, and the top rewritten experience bullets.
@@ -411,16 +498,25 @@ Merged summary:"""
             db.session.commit()
 
             # Load context
+            from models import JobMatch
             user = User.query.get(user_id)
             resume = Resume.query.filter_by(
                 user_id=user_id, is_active=True
             ).order_by(Resume.uploaded_at.desc()).first()
             config = AgentConfig.query.filter_by(user_id=user_id).first()
 
+            liked_count = JobMatch.query.filter(
+                JobMatch.user_id == user_id,
+                JobMatch.user_feedback.in_(['interested', 'applied'])
+            ).count()
+            disliked_count = JobMatch.query.filter_by(
+                user_id=user_id, user_feedback='not_interested'
+            ).count()
+
             # Build agent components
             llm = get_llm()
             tools = build_tools(self.app, user_id)
-            system_prompt = build_system_prompt(user, resume, config)
+            system_prompt = build_system_prompt(user, resume, config, liked_count, disliked_count)
             chat_history = self.get_conversation_history(user_id, limit=10)
 
             # Exclude the message we just saved from history
