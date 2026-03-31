@@ -204,6 +204,50 @@ def agent_match_feedback(match_id):
             return redirect(url_for('agent.agent_dashboard'))
 
 
+@agent_bp.route('/agent/preferences')
+@login_required
+def agent_preferences():
+    """Return what preferences have been learned from the user's feedback history."""
+    config = AgentConfig.query.filter_by(user_id=current_user.id).first()
+
+    liked = JobMatch.query.filter(
+        JobMatch.user_id == current_user.id,
+        JobMatch.user_feedback.in_(['interested', 'applied'])
+    ).order_by(JobMatch.feedback_at.desc()).all()
+
+    disliked = JobMatch.query.filter_by(
+        user_id=current_user.id,
+        user_feedback='not_interested'
+    ).order_by(JobMatch.feedback_at.desc()).all()
+
+    return jsonify({
+        "personalization_active": config is not None and config.preference_embedding is not None,
+        "liked_count": len(liked),
+        "disliked_count": len(disliked),
+        "liked_jobs": [
+            {
+                "title": m.job.title,
+                "company": m.job.company,
+                "feedback": m.user_feedback,
+                "feedback_at": m.feedback_at.isoformat() if m.feedback_at else None
+            }
+            for m in liked if m.job
+        ],
+        "disliked_jobs": [
+            {
+                "title": m.job.title,
+                "company": m.job.company,
+                "feedback_at": m.feedback_at.isoformat() if m.feedback_at else None
+            }
+            for m in disliked if m.job
+        ],
+        "preference_updated_at": (
+            config.preference_updated_at.isoformat()
+            if config and config.preference_updated_at else None
+        )
+    })
+
+
 @agent_bp.route('/agent/status')
 @login_required
 def agent_status():
