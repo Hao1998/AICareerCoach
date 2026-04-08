@@ -4,6 +4,7 @@ Flask-WTF
 Flask-Migrate
 email-validator
 langchain>=0.3.0
+langgraph>=0.2.0
 langchain-openai>=0.2.0
 langchain-community>=0.3.0
 langchain-xai>=0.2.0
