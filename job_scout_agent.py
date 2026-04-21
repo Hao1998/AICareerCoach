@@ -191,6 +191,7 @@ Return ONLY valid JSON in this format:
                 "job_stats": None,
                 "matches_analyzed": None,
                 "matches_saved": None,
+                "explicit_preferences": None,
                 "status": "running",
                 "error": None,
             }
@@ -230,26 +231,35 @@ Return ONLY valid JSON in this format:
                 'matches': matches_saved,
             }
 
-    def _extract_keywords_from_resume(self, resume_text):
+    def _extract_keywords_from_resume(self, resume_text, explicit_preferences=None):
         """
-        AUTONOMOUS DECISION: Extract job search keywords from resume
+        AUTONOMOUS DECISION: Extract job search keywords from resume.
+        If explicit_preferences are provided (from chat), they constrain the search.
 
-        Agent analyzes resume and decides what jobs to search for
+        Example with preferences:
+          User said "I want remote ML roles, no finance" →
+          keywords become "machine learning engineer, data scientist" (not finance roles)
         """
         try:
-            # Use LLM to extract key job titles/roles from resume
+            preference_context = ""
+            if explicit_preferences:
+                preference_context = f"""
+User's stated preferences (from chat — must be respected):
+{json.dumps(explicit_preferences, indent=2)}
+When choosing job titles, favour roles that match these preferences and avoid sectors/types the user has rejected.
+"""
+
             prompt = f"""Analyze this resume and extract 2-3 key job titles or roles the person is qualified for.
 Return only the job titles, comma-separated, no extra text.
- 
+{preference_context}
 Resume:
 {resume_text[:1500]}
- 
+
 Job titles:"""
 
             response = self.llm.invoke(prompt)
             keywords = response.content.strip()
 
-            # If LLM fails, fall back to generic search
             if not keywords or len(keywords) > 100:
                 keywords = "software engineer"
 
@@ -257,7 +267,7 @@ Job titles:"""
 
         except Exception as e:
             print(f"Error extracting keywords: {e}")
-            return "software engineer"  # Safe fallback
+            return "software engineer"
 
     def _fetch_new_jobs(self, keywords, config):
         """
@@ -298,7 +308,7 @@ Job titles:"""
             }
 
     def _find_and_save_matches(self, user_id, resume_id, resume_text, resume_filename,
-                               threshold, max_results, run_history_id):
+                               threshold, max_results, run_history_id, explicit_preferences=None):
         """
         AUTONOMOUS ANALYSIS: Find matches and decide which to save
 
@@ -358,9 +368,15 @@ Job titles:"""
 
                 # AUTONOMOUS DECISION: Analyze job match using LLM
                 try:
+                    preference_note = ""
+                    if explicit_preferences:
+                        pref_summary = explicit_preferences.get("summary", "")
+                        if pref_summary:
+                            preference_note = f"\nUser preference note: {pref_summary}"
+
                     analysis_result = self.llm.invoke(
                         self.matching_prompt.format(
-                            resume=resume_text[:3000],
+                            resume=resume_text[:3000] + preference_note,
                             job_title=job.title,
                             company=job.company,
                             job_description=job.description[:1000],

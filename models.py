@@ -194,6 +194,9 @@ class AgentConfig(db.Model):
     # Chat conversation summary (rolling LLM-generated summary of past sessions)
     conversation_summary = db.Column(db.Text, nullable=True)
 
+    # Explicit preferences learned from chat (e.g. remote only, avoid startups)
+    explicit_preferences = db.Column(db.JSON, nullable=True)
+
     # Relationship
     user = db.relationship('User', backref=db.backref('agent_config', uselist=False))
 
