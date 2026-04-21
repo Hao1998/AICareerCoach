@@ -28,7 +28,8 @@ import json
 
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
-
+from models import db, User, Resume, AgentConfig, AgentRunHistory
+from job_utils import build_job_faiss_index
 
 # ---------------------------------------------------------------------------
 # State definition
@@ -89,9 +90,6 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable):
     Returns:
         Compiled LangGraph graph ready for .invoke()
     """
-    # Import here to avoid circular imports at module load time
-    from models import db, User, Resume, AgentConfig, AgentRunHistory
-    from job_utils import build_job_faiss_index
 
     # ------------------------------------------------------------------ #
     # NODE FUNCTIONS
