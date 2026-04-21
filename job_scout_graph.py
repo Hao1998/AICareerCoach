@@ -50,6 +50,7 @@ class JobScoutState(TypedDict):
     adzuna_location: Optional[str]
     adzuna_max_jobs: Optional[int]
     adzuna_max_days_old: Optional[int]
+    explicit_preferences: Optional[dict]  # preferences expressed via chat
 
     # ---- populated by load_resume ----
     resume_id: Optional[int]
@@ -126,6 +127,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable):
             "adzuna_location": config.adzuna_location,
             "adzuna_max_jobs": config.adzuna_max_jobs or 20,
             "adzuna_max_days_old": config.adzuna_max_days_old or 30,
+            "explicit_preferences": config.explicit_preferences,
         }
 
     def node_load_resume(state: JobScoutState) -> dict:
@@ -161,7 +163,10 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable):
         run_id = state["run_id"]
         emit_fn(run_id, "Extracting job search keywords from your resume...")
 
-        keywords = agent._extract_keywords_from_resume(state["resume_text"])
+        keywords = agent._extract_keywords_from_resume(
+            state["resume_text"],
+            explicit_preferences=state.get("explicit_preferences"),
+        )
         emit_fn(run_id, f"Searching for: {keywords}")
 
         return {"keywords": keywords}
@@ -206,6 +211,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable):
             threshold=state["match_threshold"],
             max_results=state["max_results_per_run"],
             run_history_id=run_id,
+            explicit_preferences=state.get("explicit_preferences"),
         )
 
         return {

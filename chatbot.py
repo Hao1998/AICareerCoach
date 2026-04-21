@@ -370,6 +370,65 @@ Guidelines:
     e. NEVER ask the user to paste a job description manually — always search the database first."""
 
 
+def extract_explicit_preferences(messages, llm, existing: dict | None = None) -> dict | None:
+    """
+    Extract structured job preferences from a conversation.
+
+    Example output:
+      {
+        "remote_only": true,
+        "avoid_sectors": ["finance", "startups"],
+        "preferred_company_size": "large",
+        "preferred_locations": ["London", "Remote"],
+        "summary": "User wants remote roles at large companies, avoids finance and startups"
+      }
+
+    Returns None if no preferences were mentioned.
+    Merges with `existing` so previous preferences are not lost.
+    """
+    if not messages:
+        return existing
+
+    conversation_text = "\n".join(
+        f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
+        for m in messages
+    )
+
+    existing_json = json.dumps(existing or {})
+
+    prompt = f"""You are extracting job search preferences from a career coaching conversation.
+
+Existing preferences already stored (do NOT lose these):
+{existing_json}
+
+New conversation:
+{conversation_text}
+
+Extract ALL job preferences the user has mentioned (including from the existing preferences above).
+Return a single valid JSON object with these keys (omit a key if not mentioned at all):
+- remote_only: true/false
+- avoid_sectors: list of sectors/industries to avoid (e.g. ["finance", "startups"])
+- preferred_company_size: "small", "medium", "large", or "any"
+- preferred_locations: list of locations or ["Remote"]
+- avoid_job_types: list of job types to avoid (e.g. ["contract", "part-time"])
+- summary: one sentence describing the user's preferences in plain English
+
+If no job preferences were mentioned at all, return exactly: null
+
+Return ONLY the JSON object or null, no explanation."""
+
+    try:
+        result = llm.invoke(prompt)
+        content = result.content.strip() if hasattr(result, 'content') else str(result).strip()
+        if content.lower() == 'null' or not content:
+            return existing
+        prefs = json.loads(content)
+        return prefs if isinstance(prefs, dict) else existing
+    except Exception as e:
+        logger.error(f"Preference extraction error: {e}")
+        return existing
+
+
 def summarize_session(messages, llm):
     """Summarize a list of chat messages into a rolling session summary"""
     if not messages:
@@ -455,6 +514,12 @@ Merged summary:"""
                     config.conversation_summary = new_summary
             else:
                 config.conversation_summary = new_summary
+
+            # Extract and save explicit preferences (sticky note for JobScoutAgent)
+            updated_prefs = extract_explicit_preferences(messages, llm, config.explicit_preferences)
+            if updated_prefs:
+                config.explicit_preferences = updated_prefs
+                logger.info(f"Updated explicit preferences for user {user_id}: {updated_prefs.get('summary', '')}")
 
             db.session.commit()
 
