@@ -19,6 +19,7 @@ from langchain.prompts import PromptTemplate
 from langchain_xai import ChatXAI
 import PyPDF2
 import numpy as np
+from job_scout_graph import build_job_scout_graph
 
 # ---------------------------------------------------------------------------
 # In-memory progress store
@@ -94,6 +95,9 @@ class JobScoutAgent:
             temperature=0.7,
         )
 
+        # Build the LangGraph pipeline (nodes close over `self`)
+        self.graph = build_job_scout_graph(self, _emit_progress, _mark_done)
+
         # Job matching prompt template
         self.matching_prompt = PromptTemplate(
             input_variables=["resume", "job_title", "company", "job_description", "job_requirements"],
@@ -130,7 +134,14 @@ Return ONLY valid JSON in this format:
 
     def run_for_user(self, user_id, run_type='manual', existing_run_id=None):
         """
-        Run the job scout agent for a specific user.
+        Run the job scout agent for a specific user via the LangGraph pipeline.
+
+        The graph drives the full flow autonomously:
+          load_user → load_resume → extract_keywords → fetch_jobs
+          → [rebuild_index] → find_matches → finalize
+
+        Conditional edges skip the index rebuild when no new jobs were fetched,
+        and exit early when the agent is disabled or no resume is found.
 
         Args:
             user_id: User ID to run agent for
@@ -142,6 +153,7 @@ Return ONLY valid JSON in this format:
             dict: Results summary with stats
         """
         with self.app.app_context():
+            # Create or fetch the AgentRunHistory record
             if existing_run_id:
                 run_history = AgentRunHistory.query.get(existing_run_id)
                 if not run_history:
@@ -157,103 +169,36 @@ Return ONLY valid JSON in this format:
                 db.session.commit()
 
             run_id = run_history.id
+            _init_run_progress(run_id)
             _emit_progress(run_id, "Job Scout Agent starting...")
 
+            # Build the initial state and invoke the LangGraph pipeline
+            initial_state = {
+                "user_id": user_id,
+                "run_id": run_id,
+                "run_type": run_type,
+                # optional fields initialised to None
+                "is_enabled": None,
+                "match_threshold": None,
+                "max_results_per_run": None,
+                "adzuna_location": None,
+                "adzuna_max_jobs": None,
+                "adzuna_max_days_old": None,
+                "resume_id": None,
+                "resume_filename": None,
+                "resume_text": None,
+                "keywords": None,
+                "job_stats": None,
+                "matches_analyzed": None,
+                "matches_saved": None,
+                "status": "running",
+                "error": None,
+            }
+
             try:
-                # Get user and config
-                _emit_progress(run_id, "Loading user profile and configuration...")
-                user = User.query.get(user_id)
-                if not user:
-                    raise Exception(f"User {user_id} not found")
-
-                config = AgentConfig.query.filter_by(user_id=user_id).first()
-                if not config:
-                    config = AgentConfig(user_id=user_id)
-                    db.session.add(config)
-                    db.session.commit()
-
-                # Check if agent is enabled
-                if not config.is_enabled:
-                    run_history.status = 'completed'
-                    run_history.completed_at = datetime.utcnow()
-                    run_history.results_summary = json.dumps({
-                        'message': 'Agent is disabled for this user'
-                    })
-                    db.session.commit()
-                    _emit_progress(run_id, "Agent is disabled — skipping.")
-                    _mark_done(run_id)
-                    return {'status': 'disabled', 'message': 'Agent is disabled'}
-
-                # DECISION 1: Get user's latest resume
-                _emit_progress(run_id, "Reading your resume...")
-                latest_resume = Resume.query.filter_by(
-                    user_id=user_id,
-                    is_active=True
-                ).order_by(Resume.uploaded_at.desc()).first()
-
-                if not latest_resume:
-                    raise Exception("No resume found for user")
-
-                resume_text = self.extract_text_from_pdf(latest_resume.file_path)
-
-                # DECISION 2: Determine what jobs to fetch based on resume
-                _emit_progress(run_id, "Extracting job search keywords from your resume...")
-                keywords = self._extract_keywords_from_resume(resume_text)
-                _emit_progress(run_id, f"Searching for: {keywords}")
-
-                # DECISION 3: Fetch new jobs from Adzuna
-                _emit_progress(run_id, "Fetching new jobs from Adzuna...")
-                job_stats = self._fetch_new_jobs(keywords, config)
-                run_history.jobs_fetched = job_stats['stored']
-                _emit_progress(run_id, f"Fetched {job_stats['stored']} new jobs (skipped {job_stats['duplicates']} duplicates)")
-
-                # DECISION 4: Rebuild index if new jobs were added
-                if job_stats['stored'] > 0:
-                    _emit_progress(run_id, "Rebuilding job search index...")
-                    build_job_faiss_index()
-
-                # DECISION 5: Find matching jobs using FAISS + LLM
-                _emit_progress(run_id, "Analysing job matches against your resume...")
-                matches = self._find_and_save_matches(
-                    user_id=user_id,
-                    resume_id=latest_resume.id,
-                    resume_text=resume_text,
-                    resume_filename=latest_resume.original_filename,
-                    threshold=config.match_threshold,
-                    max_results=config.max_results_per_run,
-                    run_history_id=run_id
-                )
-
-                run_history.jobs_analyzed = len(matches['analyzed'])
-                run_history.matches_found = len(matches['saved'])
-
-                config.last_run_at = datetime.utcnow()
-
-                run_history.status = 'completed'
-                run_history.completed_at = datetime.utcnow()
-                run_history.results_summary = json.dumps({
-                    'jobs_fetched': job_stats['stored'],
-                    'jobs_analyzed': len(matches['analyzed']),
-                    'matches_found': len(matches['saved']),
-                    'top_match_score': matches['saved'][0]['match_score'] if matches['saved'] else 0,
-                    'keywords_used': keywords
-                })
-
-                db.session.commit()
-
-                _emit_progress(run_id, f"Done! Found {len(matches['saved'])} matches from {len(matches['analyzed'])} jobs analysed.")
-                _mark_done(run_id)
-
-                return {
-                    'status': 'success',
-                    'run_id': run_id,
-                    'jobs_fetched': job_stats['stored'],
-                    'jobs_analyzed': len(matches['analyzed']),
-                    'matches_found': len(matches['saved']),
-                    'matches': matches['saved']
-                }
-
+                final_state = self.graph.invoke(initial_state)
             except Exception as e:
+                # Unexpected graph-level exception
                 run_history.status = 'failed'
                 run_history.completed_at = datetime.utcnow()
                 run_history.error_message = str(e)
@@ -262,11 +207,28 @@ Return ONLY valid JSON in this format:
                 _emit_progress(run_id, f"Error: {str(e)}")
                 _mark_done(run_id)
 
+                return {'status': 'failed', 'error': str(e), 'run_id': run_id}
+
+            # Surface the final state as the return value
+            if final_state.get("status") == "failed":
                 return {
                     'status': 'failed',
-                    'error': str(e),
-                    'run_id': run_id
+                    'error': final_state.get("error", "Unknown error"),
+                    'run_id': run_id,
                 }
+            if final_state.get("status") == "disabled":
+                return {'status': 'disabled', 'message': 'Agent is disabled'}
+
+            matches_saved = final_state.get("matches_saved") or []
+            job_stats = final_state.get("job_stats") or {}
+            return {
+                'status': 'success',
+                'run_id': run_id,
+                'jobs_fetched': job_stats.get('stored', 0),
+                'jobs_analyzed': len(final_state.get("matches_analyzed") or []),
+                'matches_found': len(matches_saved),
+                'matches': matches_saved,
+            }
 
     def _extract_keywords_from_resume(self, resume_text):
         """
