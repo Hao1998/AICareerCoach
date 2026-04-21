@@ -19,7 +19,7 @@ JOB_VECTOR_INDEX = 'job_vector_index'
 
 # Prevents concurrent threads from writing the FAISS index at the same time,
 # which would corrupt index.faiss / index.pkl if writes interleave.
-_index_rebuild_lock = threading.Lock()
+_index_rebuild_lock = threading.RLock()
 
 def compute_job_embedding(job):
     """Compute and store embedding for a single job"""
@@ -77,22 +77,18 @@ def build_job_faiss_index():
 
 def get_job_faiss_index():
     """Load or build FAISS index for job embeddings"""
-    try:
-        # Try to load existing index
-        if os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
-            vectorstore = FAISS.load_local(
-                JOB_VECTOR_INDEX,
-                embeddings,
-                allow_dangerous_deserialization=True
-            )
-            return vectorstore
-        else:
-            # Build new index if doesn't exist
+    with _index_rebuild_lock:
+        try:
+            if os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
+                return FAISS.load_local(
+                    JOB_VECTOR_INDEX,
+                    embeddings,
+                    allow_dangerous_deserialization=True
+                )
             return build_job_faiss_index()
-    except Exception as e:
-        print(f"Error loading FAISS index: {e}")
-        # Rebuild if loading fails
-        return build_job_faiss_index()
+        except Exception as e:
+            print(f"Error loading FAISS index: {e}")
+            return build_job_faiss_index()
 
 
 def cosine_similarity(vec1, vec2):
