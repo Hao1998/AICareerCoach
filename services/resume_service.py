@@ -10,6 +10,7 @@ import PyPDF2
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import FAISS
 from langchain.chains import RetrievalQA
+from langsmith import traceable
 
 from job_utils import embeddings
 
@@ -21,6 +22,7 @@ text_splitter = CharacterTextSplitter(
 )
 
 
+@traceable(run_type="tool", name="pdf-extraction")
 def extract_text_from_pdf(pdf_path):
     """Extract all text from a PDF file"""
     with open(pdf_path, 'rb') as file:
@@ -31,6 +33,7 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 
+@traceable(run_type="retriever", name="resume-qa")
 def perform_qa(query, user_id):
     """Perform Q&A on the user's resume vector index"""
     from services.llm_service import get_llm

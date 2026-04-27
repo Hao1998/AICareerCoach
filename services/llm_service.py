@@ -33,6 +33,8 @@ def get_llm(app=None):
     return app.extensions['llm']
 
 
+
+
 # ── Resume Analysis Chain ──────────────────────────────────────────────────────
 
 _resume_summary_template = """
@@ -163,14 +165,17 @@ def get_preparation_roadmap_chain():
 
 # ── Job Matching Chain ─────────────────────────────────────────────────────────
 
-_job_matching_template = """
-Role: You are an AI Career Coach analyzing job matches.
+_job_matching_template = """You are an AI Career Coach. Analyze how well the candidate's resume matches the job posting below.
 
-Task: Given a candidate's resume and a job posting, analyze the match and provide:
-1. Match Score (0-100): Overall compatibility percentage
-2. Matched Skills: List of candidate's skills that match job requirements
-3. Skill Gaps: Skills required by the job that the candidate lacks
-4. Recommendation: Brief advice for the candidate
+IMPORTANT: Output ONLY a valid JSON object. No prose, no markdown, no code fences, no narrative summaries — just the raw JSON object.
+
+Required output format:
+{{
+    "match_score": <integer 0-100>,
+    "matched_skills": ["skill1", "skill2"],
+    "skill_gaps": ["gap1", "gap2"],
+    "recommendation": "Brief advice for the candidate"
+}}
 
 Resume:
 {resume}
@@ -181,13 +186,7 @@ Company: {company}
 Description: {job_description}
 Requirements: {job_requirements}
 
-Provide your analysis in the following JSON format:
-{{
-    "match_score": <number between 0-100>,
-    "matched_skills": ["skill1", "skill2", ...],
-    "skill_gaps": ["gap1", "gap2", ...],
-    "recommendation": "Your recommendation text here"
-}}
+Output ONLY the JSON object. Any text outside the JSON object is forbidden.
 """
 
 _job_matching_prompt = PromptTemplate(
@@ -195,15 +194,22 @@ _job_matching_prompt = PromptTemplate(
     template=_job_matching_template,
 )
 
-_job_matching_chain = None
 
-
-def get_job_matching_chain():
-    """Get or create job matching chain"""
-    global _job_matching_chain
-    if _job_matching_chain is None:
-        _job_matching_chain = LLMChain(llm=get_llm(), prompt=_job_matching_prompt)
-    return _job_matching_chain
+def run_job_matching(resume, job_title, company, job_description, job_requirements) -> str:
+    """
+    Invoke the LLM for job matching using an uncached instance.
+    Must bypass the global SemanticCache: the resume dominates the prompt embedding,
+    so different jobs hash as near-identical and would return stale results.
+    """
+    prompt_text = _job_matching_prompt.format(
+        resume=resume,
+        job_title=job_title,
+        company=company,
+        job_description=job_description,
+        job_requirements=job_requirements,
+    )
+    result = get_llm().invoke(prompt_text)
+    return result.content
 
 
 # ── ATS Resume Tailoring Chain ─────────────────────────────────────────────────
@@ -272,9 +278,25 @@ _resume_tailoring_prompt = PromptTemplate(
 _resume_tailoring_chain = None
 
 
-def get_resume_tailoring_chain():
-    """Get or create ATS resume tailoring chain"""
-    global _resume_tailoring_chain
-    if _resume_tailoring_chain is None:
-        _resume_tailoring_chain = LLMChain(llm=get_llm(), prompt=_resume_tailoring_prompt)
-    return _resume_tailoring_chain
+# def get_resume_tailoring_chain():
+#     """Get or create ATS resume tailoring chain"""
+#     global _resume_tailoring_chain
+#     if _resume_tailoring_chain is None:
+#         _resume_tailoring_chain = LLMChain(llm=get_llm(), prompt=_resume_tailoring_prompt)
+#     return _resume_tailoring_chain
+
+
+def run_resume_tailoring(resume, job_title, company, job_description, job_requirements) -> str:
+    """
+    Invoke the LLM for resume tailoring directly, bypassing the global SemanticCache.
+    The resume dominates the prompt embedding so different jobs would cause false cache hits.
+    """
+    prompt_text = _resume_tailoring_prompt.format(
+        resume=resume,
+        job_title=job_title,
+        company=company,
+        job_description=job_description,
+        job_requirements=job_requirements,
+    )
+    result = get_llm().invoke(prompt_text)
+    return result.content

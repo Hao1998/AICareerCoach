@@ -6,6 +6,8 @@ Run migrations with:         flask db migrate  (uses wsgi.py / factory pattern)
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from factory import create_app
 from job_utils import build_job_faiss_index, JOB_VECTOR_INDEX
 

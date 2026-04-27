@@ -17,7 +17,7 @@ from langchain.vectorstores import FAISS
 from models import db, Resume, JobMatch, JobPosting
 from job_utils import embeddings
 from services.resume_service import extract_text_from_pdf, perform_qa, text_splitter
-from services.llm_service import get_resume_analysis_chain, get_job_matching_chain, get_preparation_roadmap_chain
+from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain
 from services.job_service import find_matching_jobs
 
 resume_bp = Blueprint('resume', __name__)
@@ -170,12 +170,12 @@ def prepare_roadmap():
             skill_gaps = json.loads(job_match.gaps) if job_match.gaps else []
         else:
             try:
-                analysis_result = get_job_matching_chain().run(
+                analysis_result = run_job_matching(
                     resume=resume_text[:3000],
                     job_title=job.title,
                     company=job.company,
                     job_description=job.description[:1000],
-                    job_requirements=job.requirements[:1000] if job.requirements else "Not specified"
+                    job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
                 )
                 skill_gaps = json.loads(analysis_result).get('skill_gaps', [])
             except Exception:

@@ -57,7 +57,15 @@ def create_app(config_name='default', skip_api_check=False):
     set_llm_cache(SemanticCache(
         embedding_model=_cache_embeddings,
         score_threshold=0.90,
-        ttl_seconds=3600  # cached responses expire after 1 hour
+        ttl_seconds=3600,
+        # Job-specific prompts embed similarly across different jobs because the
+        # resume text dominates the vector, causing false cache hits. These are
+        # cached at the DB level (JobMatch) instead, so bypass semantic caching.
+        bypass_prefixes=[
+            "You are an AI Career Coach. Analyze how well",  # job matching
+            "Role: You are an expert ATS optimization specialist",  # resume tailoring
+            "Role: You are an AI Career Coach creating personalized interview",  # roadmap
+        ],
     ))
 
     # ── Extensions ────────────────────────────────────────────────────────────

@@ -408,6 +408,26 @@
                 </div>` : ''}
             `;
         }
+
+        // ── Auto-open tailor modal from ?tailor=<id> (set by chat widget) ────
+        const JOB_DATA = {
+            {% for job in jobs %}
+            {{ job.id }}: { title: {{ job.title|tojson }}, company: {{ job.company|tojson }} }{% if not loop.last %},{% endif %}
+            {% endfor %}
+        };
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const params = new URLSearchParams(window.location.search);
+            const tailorId = parseInt(params.get('tailor'), 10);
+            if (tailorId && JOB_DATA[tailorId]) {
+                const j = JOB_DATA[tailorId];
+                // Small delay so the page finishes rendering before the modal opens
+                setTimeout(function () {
+                    checkJobMatch(tailorId, j.title, j.company);
+                    switchTab('tailor');
+                }, 300);
+            }
+        });
     </script>
 </body>
 </html>

@@ -9,13 +9,15 @@ LangChain tool-calling agent with 2-tier memory:
 import json
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 # Clean top-level imports — no circular dependency now that services layer exists
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
+from langsmith import traceable
 
-from models import ChatMessage, AgentConfig, Resume, User, db
+from models import ChatMessage, AgentConfig, Resume, User, db, JobMatch
 from services.llm_service import get_llm, get_resume_tailoring_chain
 from services.resume_service import perform_qa, extract_text_from_pdf
 from services.job_service import find_matching_jobs
@@ -183,17 +185,44 @@ def build_tools(app, user_id):
 
     @tool
     def search_job_by_title(title: str) -> str:
-        """Search for jobs in the database by job title or role name. Use this FIRST when the user wants to tailor their resume to a specific job title, so you can get the job's full description and requirements. Returns a list of matching jobs with their IDs."""
+        """Search for jobs in the database by job title or role name. Use this FIRST when the user wants to tailor their resume to a specific job title, so you can get the job's full description and requirements. Returns a list of matching jobs with their IDs. Accepts formats like 'AI Developer', 'AI Developer at Intellivon', or just a company name."""
         with app.app_context():
             from models import JobPosting
-            from sqlalchemy import or_
-            jobs = JobPosting.query.filter(
-                JobPosting.is_active == True,
-                or_(
-                    JobPosting.title.ilike(f'%{title}%'),
-                    JobPosting.description.ilike(f'%{title}%')
-                )
-            ).order_by(JobPosting.posted_date.desc()).limit(5).all()
+            from sqlalchemy import or_, and_
+
+            # Parse "Title at Company" or "Title @ Company" patterns
+            title_part = title.strip()
+            company_part = None
+            for sep in [' at ', ' @ ']:
+                if sep in title.lower():
+                    idx = title.lower().index(sep)
+                    title_part = title[:idx].strip()
+                    company_part = title[idx + len(sep):].strip()
+                    break
+
+            # Build filters: match on title, and optionally narrow by company
+            title_filter = or_(
+                JobPosting.title.ilike(f'%{title_part}%'),
+                JobPosting.description.ilike(f'%{title_part}%')
+            )
+            if company_part:
+                company_filter = JobPosting.company.ilike(f'%{company_part}%')
+                # Try narrow (title + company) first
+                jobs = JobPosting.query.filter(
+                    JobPosting.is_active == True,
+                    and_(title_filter, company_filter)
+                ).order_by(JobPosting.posted_date.desc()).limit(5).all()
+                # Fall back to title-only if no results
+                if not jobs:
+                    jobs = JobPosting.query.filter(
+                        JobPosting.is_active == True,
+                        title_filter
+                    ).order_by(JobPosting.posted_date.desc()).limit(5).all()
+            else:
+                jobs = JobPosting.query.filter(
+                    JobPosting.is_active == True,
+                    title_filter
+                ).order_by(JobPosting.posted_date.desc()).limit(5).all()
 
             if not jobs:
                 return json.dumps({
@@ -244,11 +273,44 @@ def build_tools(app, user_id):
                 try:
                     tailoring = json.loads(raw)
                 except json.JSONDecodeError:
-                    tailoring = raw
+                    tailoring = {}
+
+                # Validate it's actually tailoring format (not match analysis or garbage)
+                is_valid_tailoring = (
+                    isinstance(tailoring, dict)
+                    and "ats_score" in tailoring
+                    and "tailored_sections" in tailoring
+                )
+
+                # Cache only valid tailoring data; clear corrupted cache if present
+                existing_match = JobMatch.query.filter_by(
+                    user_id=user_id, resume_id=resume.id, job_id=job.id
+                ).first()
+                if existing_match:
+                    if is_valid_tailoring:
+                        existing_match.tailoring_result = json.dumps(tailoring)
+                    else:
+                        # Clear corrupted cache so the jobs page re-runs the LLM fresh
+                        existing_match.tailoring_result = None
+                    db.session.commit()
+
+                if not is_valid_tailoring:
+                    return json.dumps({
+                        "success": False,
+                        "error": "Tailoring failed to produce a valid result. The ATS results page will re-run it fresh.",
+                        "action": "open_tailor_modal",
+                        "job_id": job.id,
+                        "job": {"id": job.id, "title": job.title, "company": job.company},
+                    })
+
+                ats = tailoring.get("ats_score", {})
                 return json.dumps({
                     "success": True,
+                    "action": "open_tailor_modal",
+                    "job_id": job.id,
                     "job": {"id": job.id, "title": job.title, "company": job.company},
-                    "tailoring": tailoring
+                    "ats_before": ats.get("before", "?"),
+                    "ats_after": ats.get("after", "?"),
                 })
             except Exception as e:
                 logger.error(f"tailor_resume_to_job error: {e}")
@@ -363,14 +425,16 @@ Guidelines:
 11. If a tool returns an error, explain the issue helpfully and suggest next steps.
 12. When the user asks what you've learned about them or about their preferences, use get_user_preferences.
 13. When the user asks to tailor, adjust, or optimize their resume for a specific job title or role:
-    a. ALWAYS call search_job_by_title first to find matching jobs in the database.
-    b. If jobs are found, pick the best match and call tailor_resume_to_job with its ID.
-    c. Present the results clearly: show the ATS score improvement, missing keywords, the tailored Professional Summary, and the top rewritten experience bullets.
-    d. If no jobs are found, tell the user to fetch jobs from the Jobs page first, then try again.
-    e. NEVER ask the user to paste a job description manually — always search the database first."""
+    a. If the job was already shown earlier in this conversation (e.g. from find_top_jobs results), use the job_id directly and call tailor_resume_to_job immediately — do NOT call search_job_by_title again.
+    b. If the job_id is not already known, call search_job_by_title first. You may pass "Title at Company" (e.g. "AI Developer at Intellivon") — it handles that format automatically.
+    c. If jobs are found, pick the best match and call tailor_resume_to_job with its ID.
+    d. Present the results clearly: show the ATS score improvement, missing keywords, the tailored Professional Summary, and the top rewritten experience bullets.
+    e. If no jobs are found, tell the user to fetch jobs from the Jobs page first, then try again.
+    f. NEVER ask the user to paste a job description manually — always search the database first."""
 
 
-def extract_explicit_preferences(messages, llm, existing: dict | None = None) -> dict | None:
+@traceable(run_type="llm", name="preference-extractor")
+def extract_explicit_preferences(messages, llm, existing: Optional[dict] = None) -> Optional[dict]:
     """
     Extract structured job preferences from a conversation.
 
@@ -429,6 +493,7 @@ Return ONLY the JSON object or null, no explanation."""
         return existing
 
 
+@traceable(run_type="llm", name="session-summarizer")
 def summarize_session(messages, llm):
     """Summarize a list of chat messages into a rolling session summary"""
     if not messages:
@@ -474,6 +539,7 @@ class CareerCoachChatbot:
             elapsed = datetime.utcnow() - last_msg.timestamp
             return elapsed > timedelta(minutes=SESSION_TIMEOUT_MINUTES)
 
+    @traceable(run_type="chain", name="session-close-and-summarize")
     def close_and_summarize_session(self, user_id):
         """Summarize old session messages and store in AgentConfig"""
         with self.app.app_context():
@@ -542,6 +608,7 @@ Merged summary:"""
 
         return history
 
+    @traceable(run_type="chain", name="career-coach-chat")
     def chat(self, user_id, message):
         """Process a chat message and return the response"""
         with self.app.app_context():
@@ -563,7 +630,6 @@ Merged summary:"""
             db.session.commit()
 
             # Load context
-            from models import JobMatch
             user = User.query.get(user_id)
             resume = Resume.query.filter_by(
                 user_id=user_id, is_active=True
@@ -630,6 +696,19 @@ Merged summary:"""
                                 if parsed.get("success") and parsed.get("action") == "redirect_to_jobs":
                                     intent = "redirect_to_jobs"
                                     action_data = json.dumps({"job_ids": parsed.get("job_ids", [])})
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                        if hasattr(action, 'tool') and action.tool == "tailor_resume_to_job":
+                            try:
+                                parsed = json.loads(tool_output) if isinstance(tool_output, str) else tool_output
+                                if parsed.get("action") == "open_tailor_modal" and parsed.get("job_id"):
+                                    intent = "open_tailor_modal"
+                                    action_data = json.dumps({
+                                        "job_id": parsed.get("job_id"),
+                                        "job": parsed.get("job"),
+                                        "ats_before": parsed.get("ats_before"),
+                                        "ats_after": parsed.get("ats_after"),
+                                    })
                             except (json.JSONDecodeError, TypeError):
                                 pass
 

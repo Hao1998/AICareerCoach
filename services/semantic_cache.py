@@ -1,3 +1,4 @@
+import json
 import time
 import threading
 import numpy as np
@@ -6,13 +7,33 @@ from langchain_core.caches import BaseCache
 
 class SemanticCache(BaseCache):
     def __init__(self, embedding_model, score_threshold: float = 0.90,
-                 max_size: int = 500, ttl_seconds: int = 3600):
+                 max_size: int = 500, ttl_seconds: int = 3600,
+                 bypass_prefixes: list = None):
         self._embed = embedding_model
         self._threshold = score_threshold
         self._max_size = max_size
         self._ttl = ttl_seconds
         self._store = []  # list of (vector, llm_string, response, expires_at)
         self._lock = threading.Lock()
+        self._bypass_prefixes = tuple(bypass_prefixes or [])
+
+    @staticmethod
+    def _extract_content(prompt: str) -> str:
+        """LangChain serializes messages as JSON before passing to the cache.
+        Extract the actual text content so prefix checks work correctly."""
+        try:
+            messages = json.loads(prompt)
+            if isinstance(messages, list) and messages:
+                return messages[0].get("kwargs", {}).get("content", prompt)
+        except (json.JSONDecodeError, AttributeError, IndexError):
+            pass
+        return prompt
+
+    def _should_bypass(self, prompt: str) -> bool:
+        if not self._bypass_prefixes:
+            return False
+        content = self._extract_content(prompt)
+        return content.lstrip().startswith(self._bypass_prefixes)
 
     @staticmethod
     def _cosine(a, b) -> float:
@@ -26,6 +47,8 @@ class SemanticCache(BaseCache):
         self._store = [e for e in self._store if e[3] > now]
 
     def lookup(self, prompt: str, llm_string: str):
+        if self._should_bypass(prompt):
+            return None
         query_vec = self._embed.embed_query(prompt)
         with self._lock:
             self._purge_expired()
@@ -37,6 +60,8 @@ class SemanticCache(BaseCache):
         return None
 
     def update(self, prompt: str, llm_string: str, return_val) -> None:
+        if self._should_bypass(prompt):
+            return
         vec = self._embed.embed_query(prompt)
         expires_at = time.time() + self._ttl
         with self._lock:

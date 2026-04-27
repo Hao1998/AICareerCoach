@@ -7,10 +7,11 @@ No Flask routes here — pure business logic.
 
 import json
 import numpy as np
+from langsmith import traceable
 
 from job_utils import embeddings, get_job_faiss_index
 from models import JobPosting
-from services.llm_service import get_job_matching_chain
+from services.llm_service import run_job_matching
 
 
 def calculate_embedding_similarity(resume_embedding, job_embedding):
@@ -37,12 +38,12 @@ def find_matching_jobs_old(resume_text, top_k=5):
         similarity_score = calculate_embedding_similarity(resume_embedding, job_embedding)
 
         try:
-            analysis_result = get_job_matching_chain().run(
+            analysis_result = run_job_matching(
                 resume=resume_text[:3000],
                 job_title=job.title,
                 company=job.company,
                 job_description=job.description[:1000],
-                job_requirements=job.requirements[:1000] if job.requirements else "Not specified"
+                job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
             )
             analysis = json.loads(analysis_result)
         except Exception:
@@ -59,6 +60,7 @@ def find_matching_jobs_old(resume_text, top_k=5):
     return matches[:top_k]
 
 
+@traceable(run_type="chain", name="job-matching")
 def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
     """
     [OPTIMIZED] Two-stage job matching using FAISS + LLM.
@@ -94,12 +96,12 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             similarity_score = max(0, min(1, 1 - (distance ** 2 / 2)))
 
             try:
-                analysis_result = get_job_matching_chain().run(
+                analysis_result = run_job_matching(
                     resume=resume_text[:3000],
                     job_title=job.title,
                     company=job.company,
                     job_description=job.description[:1000],
-                    job_requirements=job.requirements[:1000] if job.requirements else "Not specified"
+                    job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
                 )
                 analysis = json.loads(analysis_result)
             except Exception as e:

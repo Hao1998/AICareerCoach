@@ -6,6 +6,7 @@ Blueprint: 'jobs'
 """
 
 import json
+import re
 
 from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app
 from flask_login import login_required, current_user
@@ -14,10 +15,24 @@ from models import db, JobPosting, JobMatch, Resume, AgentConfig
 from job_fetcher import fetch_jobs_from_adzuna
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import extract_text_from_pdf
-from services.llm_service import get_resume_analysis_chain, get_job_matching_chain, get_resume_tailoring_chain
+from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring
 from services.job_service import find_matching_jobs
 
 job_bp = Blueprint('jobs', __name__)
+
+
+def _extract_json(text: str) -> str:
+    """Strip markdown fences and surrounding text, returning the first JSON object found."""
+    text = text.strip()
+    # Remove ```json ... ``` or ``` ... ``` fences
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    text = text.strip()
+    # If there's still preamble/postamble, pull out the first {...} block
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        return match.group(0)
+    return text
 
 
 @job_bp.route('/jobs')
@@ -225,23 +240,37 @@ def check_job_match(job_id):
         if not latest_resume:
             return jsonify({"error": "No resume found. Please upload your resume first."}), 400
 
+        force_refresh = (request.get_json(silent=True, force=True) or {}).get('refresh', False)
+
+        existing_match = JobMatch.query.filter_by(
+            user_id=current_user.id,
+            resume_id=latest_resume.id,
+            job_id=job.id
+        ).first()
+
+
+        print(f"Existing match's content: {existing_match} with jobID: {job.id}")
+        if existing_match and existing_match.match_score is not None and not force_refresh:
+            return jsonify({
+                "cached": True,
+                "match_score": existing_match.match_score,
+                "matched_skills": json.loads(existing_match.matched_skills) if existing_match.matched_skills else [],
+                "skill_gaps": json.loads(existing_match.gaps) if existing_match.gaps else [],
+                "recommendation": existing_match.recommendation or "",
+            })
+
         resume_text = extract_text_from_pdf(latest_resume.file_path)
+        analysis_result = None
 
         try:
-            analysis_result = get_job_matching_chain().run(
+            analysis_result = run_job_matching(
                 resume=resume_text[:3000],
                 job_title=job.title,
                 company=job.company,
                 job_description=job.description[:1000],
-                job_requirements=job.requirements[:1000] if job.requirements else "Not specified"
+                job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
             )
-            analysis = json.loads(analysis_result)
-
-            existing_match = JobMatch.query.filter_by(
-                user_id=current_user.id,
-                resume_id=latest_resume.id,
-                job_id=job.id
-            ).first()
+            analysis = json.loads(_extract_json(analysis_result))
 
             if existing_match:
                 existing_match.match_score = analysis.get('match_score', 0)
@@ -250,7 +279,7 @@ def check_job_match(job_id):
                 existing_match.recommendation = analysis.get('recommendation', '')
                 existing_match.resume_filename = latest_resume.filename
             else:
-                job_match = JobMatch(
+                db.session.add(JobMatch(
                     user_id=current_user.id,
                     resume_id=latest_resume.id,
                     resume_filename=latest_resume.filename,
@@ -258,14 +287,14 @@ def check_job_match(job_id):
                     match_score=analysis.get('match_score', 0),
                     matched_skills=json.dumps(analysis.get('matched_skills', [])),
                     gaps=json.dumps(analysis.get('skill_gaps', [])),
-                    recommendation=analysis.get('recommendation', '')
-                )
-                db.session.add(job_match)
+                    recommendation=analysis.get('recommendation', ''),
+                ))
             db.session.commit()
             return jsonify(analysis)
 
         except json.JSONDecodeError as e:
             print(f"JSON parsing failed for job {job.id}: {e}")
+            print(f"Raw LLM output was: {repr(analysis_result)}")
             return jsonify({"error": "Failed to parse analysis results. Please try again."}), 500
 
     except Exception as e:
@@ -297,7 +326,7 @@ def tailor_resume_for_job(job_id):
             resume_id=latest_resume.id,
             job_id=job.id
         ).first()
-
+        print(f"Existing match's content: {existing_match} with jobID: {job.id}")
         if existing_match and existing_match.tailoring_result and not force_refresh:
             return jsonify({
                 "cached": True,
@@ -307,31 +336,44 @@ def tailor_resume_for_job(job_id):
 
         # Run tailoring chain
         resume_text = extract_text_from_pdf(latest_resume.file_path)
-        result = get_resume_tailoring_chain().invoke({
-            "resume": resume_text[:4000],
-            "job_title": job.title,
-            "company": job.company or "the company",
-            "job_description": (job.description or "")[:2000],
-            "job_requirements": (job.requirements or "")[:1500],
-        })
-        raw = result.get('text', str(result)).strip()
-
-        # Strip markdown code fences if present
-        if raw.startswith('```'):
-            raw = raw.split('```')[1]
-            if raw.startswith('json'):
-                raw = raw[4:]
-            raw = raw.strip()
+        # result = get_resume_tailoring_chain().invoke({
+        #     "resume": resume_text[:4000],
+        #     "job_title": job.title,
+        #     "company": job.company or "the company",
+        #     "job_description": (job.description or "")[:2000],
+        #     "job_requirements": (job.requirements or "")[:1500],
+        # })
+        result = run_resume_tailoring(
+            resume=resume_text[:4000],
+            job_title=job.title,
+            company=job.company or "the company",
+            job_description=job.description[:1000],
+            job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
+        )
+        raw = result.strip()
 
         try:
-            tailoring = json.loads(raw)
+            tailoring = json.loads(_extract_json(raw))
         except json.JSONDecodeError:
+            print(f"Tailoring JSON parse failed for job {job.id}. Raw output: {repr(raw)}")
             return jsonify({"error": "Failed to parse tailoring result. Please try again."}), 500
 
-        # Cache on existing match if one exists
+
+
         if existing_match:
             existing_match.tailoring_result = json.dumps(tailoring)
-            db.session.commit()
+        else:
+            db.session.add(JobMatch(
+                user_id=current_user.id,
+                resume_id=latest_resume.id,
+                resume_filename=latest_resume.filename,
+                job_id=job.id,
+                match_score=0,
+                matched_skills=json.dumps([]),
+                gaps=json.dumps([]),
+                tailoring_result=json.dumps(tailoring),
+            ))
+        db.session.commit()
 
         return jsonify({
             "cached": False,

@@ -271,6 +271,16 @@
             const ids = actionData.job_ids.join(',');
             html += '<br><a href="/jobs?ids=' + ids + '" class="chat-action-btn">View ' + actionData.job_ids.length + ' Matching Jobs</a>';
         }
+        if (intent === 'open_tailor_modal' && actionData && actionData.job_id) {
+            const job = actionData.job || {};
+            const label = job.title ? job.title + (job.company ? ' at ' + job.company : '') : 'Job';
+            const before = actionData.ats_before;
+            const after  = actionData.ats_after;
+            const scoreText = (before && before !== '?' && after && after !== '?')
+                ? ' (' + before + '% → ' + after + '%)'
+                : '';
+            html += '<br><a href="/jobs?ids=' + actionData.job_id + '&tailor=' + actionData.job_id + '" target="_blank" class="chat-action-btn">View ATS Results for ' + label + scoreText + '</a>';
+        }
 
         div.innerHTML = html;
         messagesEl.appendChild(div);
