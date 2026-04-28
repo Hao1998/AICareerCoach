@@ -11,6 +11,7 @@ from flask_limiter.errors import RateLimitExceeded
 
 from factory import limiter
 from models import db, ChatMessage
+from services.input_guard import scan_message
 
 chat_bp = Blueprint('chat', __name__)
 
@@ -43,6 +44,10 @@ def chat_api():
         message = data['message'].strip()
         if len(message) > 2000:
             return jsonify({"success": False, "error": "Message too long (max 2000 characters)"}), 400
+
+        guard = scan_message(message)
+        if not guard["safe"]:
+            return jsonify({"success": True, "response": guard["response"]}), 200
 
         result = _get_chatbot().chat(current_user.id, message)
 

@@ -278,12 +278,12 @@ _resume_tailoring_prompt = PromptTemplate(
 _resume_tailoring_chain = None
 
 
-# def get_resume_tailoring_chain():
-#     """Get or create ATS resume tailoring chain"""
-#     global _resume_tailoring_chain
-#     if _resume_tailoring_chain is None:
-#         _resume_tailoring_chain = LLMChain(llm=get_llm(), prompt=_resume_tailoring_prompt)
-#     return _resume_tailoring_chain
+def get_resume_tailoring_chain():
+    """Get or create ATS resume tailoring chain"""
+    global _resume_tailoring_chain
+    if _resume_tailoring_chain is None:
+        _resume_tailoring_chain = LLMChain(llm=get_llm(), prompt=_resume_tailoring_prompt)
+    return _resume_tailoring_chain
 
 
 def run_resume_tailoring(resume, job_title, company, job_description, job_requirements) -> str:
