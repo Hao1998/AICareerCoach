@@ -13,6 +13,7 @@ from langchain.chains import RetrievalQA
 from langsmith import traceable
 
 from job_utils import embeddings
+from services.input_guard import scan_resume_text
 
 text_splitter = CharacterTextSplitter(
     separator='\n',
@@ -23,14 +24,14 @@ text_splitter = CharacterTextSplitter(
 
 
 @traceable(run_type="tool", name="pdf-extraction")
-def extract_text_from_pdf(pdf_path):
-    """Extract all text from a PDF file"""
+def extract_text_from_pdf(pdf_path, user_id=None):
+    """Extract all text from a PDF file, stripping any embedded injection payloads."""
     with open(pdf_path, 'rb') as file:
         reader = PyPDF2.PdfReader(file)
         text = ""
         for page_num in range(len(reader.pages)):
             text += reader.pages[page_num].extract_text()
-    return text
+    return scan_resume_text(text, user_id=user_id)
 
 
 @traceable(run_type="retriever", name="resume-qa")
