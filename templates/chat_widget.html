@@ -108,6 +108,13 @@
         background: #1d4ed8;
         color: white;
     }
+    .chat-tool-status {
+        margin-top: 6px;
+        font-size: 12px;
+        color: #6b7280;
+        font-style: italic;
+        opacity: 0.85;
+    }
     #chat-typing {
         display: none;
         align-self: flex-start;
@@ -265,11 +272,19 @@
     function appendMessage(role, content, intent, actionData) {
         const div = document.createElement('div');
         div.className = 'chat-msg ' + role;
-        let html = formatContent(content);
+        div.innerHTML = formatContent(content);
+        attachActionButtons(div, intent, actionData);
+        messagesEl.appendChild(div);
+        scrollToBottom();
+        return div;
+    }
 
+    function attachActionButtons(div, intent, actionData) {
         if (intent === 'redirect_to_jobs' && actionData && actionData.job_ids) {
             const ids = actionData.job_ids.join(',');
-            html += '<br><a href="/jobs?ids=' + ids + '" class="chat-action-btn">View ' + actionData.job_ids.length + ' Matching Jobs</a>';
+            div.insertAdjacentHTML('beforeend',
+                '<br><a href="/jobs?ids=' + ids + '" class="chat-action-btn">View ' +
+                actionData.job_ids.length + ' Matching Jobs</a>');
         }
         if (intent === 'open_tailor_modal' && actionData && actionData.job_id) {
             const job = actionData.job || {};
@@ -279,12 +294,10 @@
             const scoreText = (before && before !== '?' && after && after !== '?')
                 ? ' (' + before + '% → ' + after + '%)'
                 : '';
-            html += '<br><a href="/jobs?ids=' + actionData.job_id + '&tailor=' + actionData.job_id + '" target="_blank" class="chat-action-btn">View ATS Results for ' + label + scoreText + '</a>';
+            div.insertAdjacentHTML('beforeend',
+                '<br><a href="/jobs?ids=' + actionData.job_id + '&tailor=' + actionData.job_id +
+                '" target="_blank" class="chat-action-btn">View ATS Results for ' + label + scoreText + '</a>');
         }
-
-        div.innerHTML = html;
-        messagesEl.appendChild(div);
-        scrollToBottom();
     }
 
     function loadHistory() {
@@ -321,7 +334,11 @@
         }
     }
 
-    function sendMessage() {
+    // Streaming send — consumes Server-Sent Events from /api/chat/stream.
+    // The reply div is created empty and tokens are appended as they arrive,
+    // giving the user a typewriter effect and freeing the request thread
+    // immediately after each chunk yields.
+    async function sendMessage() {
         const text = inputEl.value.trim();
         if (!text) return;
 
@@ -334,24 +351,119 @@
         typingEl.style.display = 'block';
         scrollToBottom();
 
-        fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text })
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
+        // The assistant message div we'll fill with tokens.
+        let replyDiv = null;
+        let replyText = '';
+
+        function ensureReplyDiv() {
+            if (replyDiv) return replyDiv;
             typingEl.style.display = 'none';
-            if (data.success) {
-                appendMessage('assistant', data.response, data.intent, data.action_data);
-            } else {
-                appendMessage('assistant', 'Sorry, something went wrong: ' + (data.error || 'Unknown error'));
+            replyDiv = document.createElement('div');
+            replyDiv.className = 'chat-msg assistant';
+            messagesEl.appendChild(replyDiv);
+            return replyDiv;
+        }
+
+        try {
+            const res = await fetch('/api/chat/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text })
+            });
+
+            if (!res.ok) {
+                typingEl.style.display = 'none';
+                if (res.status === 409) {
+                    appendMessage('assistant', "Hold on — I'm still finishing your last message.");
+                } else if (res.status === 429) {
+                    appendMessage('assistant', 'You are sending messages too quickly. Please slow down.');
+                } else {
+                    const err = await res.json().catch(function() { return {}; });
+                    appendMessage('assistant', 'Sorry, something went wrong: ' + (err.error || res.statusText));
+                }
+                return;
             }
-        })
-        .catch(function(err) {
+
+            // Read the SSE stream chunk by chunk.
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                // SSE events are separated by a blank line.
+                const events = buffer.split('\n\n');
+                buffer = events.pop();   // last chunk may be incomplete
+
+                for (const raw of events) {
+                    // Skip comments (lines starting with ":") and other non-data lines.
+                    const dataLines = raw.split('\n').filter(function(l) {
+                        return l.startsWith('data: ');
+                    });
+                    if (dataLines.length === 0) continue;
+
+                    const payload = dataLines.map(function(l) { return l.slice(6); }).join('\n');
+                    let evt;
+                    try { evt = JSON.parse(payload); } catch (e) { continue; }
+
+                    if (evt.type === 'token') {
+                        ensureReplyDiv();
+                        replyText += evt.content;
+                        replyDiv.innerHTML = formatContent(replyText);
+                        scrollToBottom();
+                    } else if (evt.type === 'tool_start') {
+                        ensureReplyDiv();
+                        // Lightweight inline indicator while a tool runs.
+                        const label = ({
+                            find_top_jobs:        'Searching jobs…',
+                            get_resume_info:      'Reading your resume…',
+                            tailor_resume_to_job: 'Tailoring your resume…',
+                            get_recent_matches:   'Fetching recent matches…',
+                            search_job_by_title:  'Looking up job…',
+                            trigger_job_scout_agent: 'Running job scout agent…',
+                            get_user_preferences: 'Checking your preferences…',
+                            explain_feature:      'Looking up help…',
+                        })[evt.tool] || ('Running ' + evt.tool + '…');
+                        // If we already have streamed text, append a tool note on a new line.
+                        if (replyText) {
+                            replyDiv.innerHTML = formatContent(replyText) +
+                                '<div class="chat-tool-status">' + label + '</div>';
+                        } else {
+                            replyDiv.innerHTML = '<div class="chat-tool-status">' + label + '</div>';
+                        }
+                        scrollToBottom();
+                    } else if (evt.type === 'tool_end') {
+                        // Strip the tool status indicator if no tokens have arrived yet.
+                        if (replyDiv && !replyText) {
+                            replyDiv.innerHTML = '';
+                        }
+                    } else if (evt.type === 'done') {
+                        ensureReplyDiv();
+                        if (!replyText) replyText = '(no response)';
+                        replyDiv.innerHTML = formatContent(replyText);
+                        attachActionButtons(replyDiv, evt.intent, evt.action_data);
+                        scrollToBottom();
+                    } else if (evt.type === 'error') {
+                        ensureReplyDiv();
+                        replyDiv.innerHTML = formatContent(
+                            'Sorry, I hit an error: ' + (evt.error || 'unknown')
+                        );
+                    }
+                }
+            }
+        } catch (err) {
             typingEl.style.display = 'none';
-            appendMessage('assistant', 'Sorry, I had trouble connecting. Please try again.');
-        });
+            console.error('Chat stream failed:', err);
+            if (!replyDiv) {
+                appendMessage('assistant', 'Sorry, I had trouble connecting. Please try again.');
+            }
+        } finally {
+            typingEl.style.display = 'none';
+            sendBtn.disabled = !inputEl.value.trim();
+        }
     }
 
     function clearHistory() {

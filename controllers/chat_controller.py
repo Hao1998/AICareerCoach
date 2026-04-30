@@ -5,13 +5,18 @@ Handles Career Coach AI chatbot endpoints and the chat widget.
 Blueprint: 'chat'
 """
 
-from flask import Blueprint, request, render_template, jsonify, current_app
+import json
+import queue
+import threading
+
+from flask import Blueprint, request, render_template, jsonify, current_app, Response, stream_with_context
 from flask_login import login_required, current_user
 from flask_limiter.errors import RateLimitExceeded
 
 from factory import limiter
 from models import db, ChatMessage
 from services.input_guard import scan_message
+from services.streaming import acquire_stream_slot, release_stream_slot
 
 chat_bp = Blueprint('chat', __name__)
 
@@ -59,6 +64,87 @@ def chat_api():
         })
     except Exception as e:
         return jsonify({"success": False, "error": f"Chat error: {str(e)}"}), 500
+
+
+@chat_bp.route('/api/chat/stream', methods=['POST'])
+@login_required
+@limiter.limit("20 per minute; 200 per day")
+def chat_stream_api():
+    """
+    Server-Sent Events streaming variant of /api/chat.
+
+    Wire format (each line is a separate SSE event):
+        data: {"type":"token","content":"Hello"}\n\n
+        data: {"type":"tool_start","tool":"find_top_jobs"}\n\n
+        data: {"type":"tool_end"}\n\n
+        data: {"type":"done","intent":"...","action_data":{...}}\n\n
+
+    Rate limits applied:
+      • Flask-Limiter:    20 connections/min, 200/day per user (existing).
+      • Concurrent guard: max 1 in-flight stream per user — second
+                          request gets HTTP 409 immediately.
+    """
+    data = request.get_json(silent=True) or {}
+    message = (data.get('message') or '').strip()
+    if not message:
+        return jsonify({"success": False, "error": "Message is required"}), 400
+    if len(message) > 2000:
+        return jsonify({"success": False, "error": "Message too long (max 2000 characters)"}), 400
+
+    guard = scan_message(message)
+    if not guard["safe"]:
+        # Synthetic single-event stream so the frontend code path is uniform.
+        def guarded():
+            yield f"data: {json.dumps({'type': 'token', 'content': guard['response']})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return Response(guarded(), mimetype='text/event-stream')
+
+    user_id = current_user.id
+
+    # Concurrent stream limit (Layer 2 of rate limiting).
+    if not acquire_stream_slot(user_id):
+        return jsonify({
+            "success": False,
+            "error": "You already have a message in flight. Wait for it to finish.",
+        }), 409
+
+    event_queue: queue.Queue = queue.Queue()
+    app = current_app._get_current_object()
+
+    # Lazy-load the chatbot (same pattern as the non-streaming endpoint).
+    from chatbot import CareerCoachChatbot
+    chatbot = CareerCoachChatbot(app)
+
+    # Run the agent in a background thread so this request thread is free to
+    # drain the queue and yield SSE events.
+    def runner():
+        try:
+            chatbot.chat_stream(user_id, message, event_queue)
+        finally:
+            release_stream_slot(user_id)
+
+    threading.Thread(target=runner, daemon=True).start()
+
+    @stream_with_context
+    def event_stream():
+        # Initial comment line keeps proxies (nginx, ALB) from buffering before
+        # the first real event arrives.
+        yield ": ready\n\n"
+        while True:
+            event = event_queue.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return Response(
+        event_stream(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',   # disable nginx buffering for true streaming
+            'Connection': 'keep-alive',
+        },
+    )
 
 
 @chat_bp.route('/api/chat/history', methods=['GET'])

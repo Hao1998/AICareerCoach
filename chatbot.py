@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # Clean top-level imports — no circular dependency now that services layer exists
-from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
 from langsmith import traceable
@@ -621,6 +621,162 @@ Merged summary:"""
                 history.append(AIMessage(content=msg.content))
 
         return history
+
+    # ─── Streaming variant of chat() ──────────────────────────────────────────
+    # Runs in a background thread, pushes tokens + tool events onto a queue,
+    # writes the assistant message to DB once streaming completes, and pushes
+    # session summarization to a fire-and-forget worker thread so the user is
+    # never blocked waiting for it.
+    @traceable(run_type="chain", name="career-coach-chat-stream")
+    def chat_stream(self, user_id, message, event_queue):
+        """
+        Streaming version of chat().
+
+        Pushes events onto `event_queue` for the SSE endpoint to drain.
+        Always pushes a {"type": "done", ...} or {"type": "error", ...} at the
+        end, followed by a None sentinel. The SSE generator stops on None.
+        """
+        import threading
+        from services.streaming import TokenStreamHandler
+        from services.llm_service import get_streaming_llm
+
+        try:
+            with self.app.app_context():
+                # Session boundary — fire-and-forget the summarization in a
+                # background thread instead of blocking the user's message.
+                if self.detect_session_boundary(user_id):
+                    threading.Thread(
+                        target=self._summarize_in_background,
+                        args=(user_id,),
+                        daemon=True,
+                    ).start()
+
+                # Save user message immediately (so history reflects it even
+                # if streaming fails partway through).
+                user_msg = ChatMessage(
+                    user_id=user_id,
+                    role='user',
+                    content=message,
+                    timestamp=datetime.utcnow(),
+                )
+                db.session.add(user_msg)
+                db.session.commit()
+
+                # Build agent context (same as chat(), see comments there).
+                user = User.query.get(user_id)
+                resume = Resume.query.filter_by(
+                    user_id=user_id, is_active=True
+                ).order_by(Resume.uploaded_at.desc()).first()
+                config = AgentConfig.query.filter_by(user_id=user_id).first()
+                liked_count = JobMatch.query.filter(
+                    JobMatch.user_id == user_id,
+                    JobMatch.user_feedback.in_(['interested', 'applied'])
+                ).count()
+                disliked_count = JobMatch.query.filter_by(
+                    user_id=user_id, user_feedback='not_interested'
+                ).count()
+
+                llm = get_streaming_llm(self.app)
+                tools = build_tools(self.app, user_id)
+                system_prompt = build_system_prompt(user, resume, config, liked_count, disliked_count)
+                chat_history = self.get_conversation_history(user_id, limit=10)
+                if chat_history:
+                    chat_history = chat_history[:-1]
+
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", system_prompt),
+                    MessagesPlaceholder(variable_name="chat_history"),
+                    ("human", "{input}"),
+                    MessagesPlaceholder(variable_name="agent_scratchpad"),
+                ])
+
+                handler = TokenStreamHandler(event_queue)
+
+                agent = create_tool_calling_agent(llm, tools, prompt)
+                agent_executor = AgentExecutor(
+                    agent=agent,
+                    tools=tools,
+                    max_iterations=3,
+                    handle_parsing_errors=True,
+                    return_intermediate_steps=True,
+                    verbose=False,
+                )
+
+                result = agent_executor.invoke(
+                    {"input": message, "chat_history": chat_history},
+                    config={"callbacks": [handler]},
+                )
+
+                # Captured text is the streamed final answer. Fall back to
+                # result["output"] if streaming didn't capture anything.
+                response_text = handler.captured_text or result.get(
+                    "output", "I'm sorry, I couldn't process your request."
+                )
+
+                # Same intent-detection logic as chat() — we still need it for
+                # the action buttons (View Matching Jobs, Open Tailor Modal).
+                intent = None
+                action_data = None
+                for step in result.get("intermediate_steps", []):
+                    if not (hasattr(step, '__len__') and len(step) >= 2):
+                        continue
+                    action, tool_output = step[0], step[1]
+                    if not hasattr(action, 'tool'):
+                        continue
+                    if action.tool == "find_top_jobs":
+                        try:
+                            parsed = json.loads(tool_output) if isinstance(tool_output, str) else tool_output
+                            if parsed.get("success") and parsed.get("action") == "redirect_to_jobs":
+                                intent = "redirect_to_jobs"
+                                action_data = json.dumps({"job_ids": parsed.get("job_ids", [])})
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    elif action.tool == "tailor_resume_to_job":
+                        try:
+                            parsed = json.loads(tool_output) if isinstance(tool_output, str) else tool_output
+                            if parsed.get("action") == "open_tailor_modal" and parsed.get("job_id"):
+                                intent = "open_tailor_modal"
+                                action_data = json.dumps({
+                                    "job_id": parsed.get("job_id"),
+                                    "job": parsed.get("job"),
+                                    "ats_before": parsed.get("ats_before"),
+                                    "ats_after": parsed.get("ats_after"),
+                                })
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                # Persist the assistant message AFTER streaming finishes so the
+                # DB row reflects exactly what the user saw.
+                assistant_msg = ChatMessage(
+                    user_id=user_id,
+                    role='assistant',
+                    content=response_text,
+                    timestamp=datetime.utcnow(),
+                    intent=intent,
+                    action_data=action_data,
+                )
+                db.session.add(assistant_msg)
+                db.session.commit()
+
+                event_queue.put({
+                    "type": "done",
+                    "intent": intent,
+                    "action_data": json.loads(action_data) if action_data else None,
+                })
+
+        except Exception as exc:
+            logger.exception("chat_stream failed for user %s", user_id)
+            event_queue.put({"type": "error", "error": str(exc)})
+        finally:
+            # Sentinel — tells the SSE generator to stop.
+            event_queue.put(None)
+
+    def _summarize_in_background(self, user_id):
+        """Run session summarization off the request path."""
+        try:
+            self.close_and_summarize_session(user_id)
+        except Exception as exc:
+            logger.error(f"Background session summarization failed: {exc}")
 
     @traceable(run_type="chain", name="career-coach-chat")
     def chat(self, user_id, message):

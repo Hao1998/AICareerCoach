@@ -3,10 +3,18 @@ Application Configuration
 """
 import os
 
+# Absolute path to the project root — works regardless of the working directory
+# the process is launched from (e.g. Claude Desktop spawning the MCP server).
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
 class Config:
     """Base configuration"""
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///career_coach.db')
+    SQLALCHEMY_DATABASE_URI = os.environ.get(
+        'DATABASE_URL',
+        'sqlite:///' + os.path.join(_PROJECT_ROOT, 'instance', 'career_coach.db')
+    )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # API Keys (optional for migrations)
@@ -14,11 +22,11 @@ class Config:
     ADZUNA_APP_ID = os.environ.get('ADZUNA_APP_ID')
     ADZUNA_APP_KEY = os.environ.get('ADZUNA_APP_KEY')
 
-    # Upload configuration
-    UPLOAD_FOLDER = 'uploads'
+    # Upload configuration — absolute so the server works from any working directory
+    UPLOAD_FOLDER = os.path.join(_PROJECT_ROOT, 'uploads')
 
-    # Job vector index
-    JOB_VECTOR_INDEX = 'job_vector_index'
+    # Job vector index — same reason
+    JOB_VECTOR_INDEX = os.path.join(_PROJECT_ROOT, 'job_vector_index')
 
 class DevelopmentConfig(Config):
     """Development configuration"""
