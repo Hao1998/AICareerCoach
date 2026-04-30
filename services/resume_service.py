@@ -7,9 +7,9 @@ No Flask routes here — pure business logic.
 
 import os
 import PyPDF2
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.chains import RetrievalQA
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_classic.chains import RetrievalQA
 from langsmith import traceable
 
 from job_utils import embeddings

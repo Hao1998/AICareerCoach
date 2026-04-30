@@ -16,8 +16,8 @@ from flask_login import LoginManager, current_user
 from flask_migrate import Migrate
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from langchain.globals import set_llm_cache
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_core.globals import set_llm_cache
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from models import db, User
 from config import config
@@ -53,7 +53,7 @@ def create_app(config_name='default', skip_api_check=False):
     # This means rephrased queries like "analyze my resume" and "review my CV"
     # both hit the same cached response — unlike exact-match caching.
     # Uses the same HuggingFace embedding model already used for job matching.
-    _cache_embeddings = HuggingFaceEmbeddings()
+    _cache_embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
     set_llm_cache(SemanticCache(
         embedding_model=_cache_embeddings,
         score_threshold=0.90,

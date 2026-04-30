@@ -12,7 +12,7 @@ from datetime import datetime
 from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 
 from models import db, Resume, JobMatch, JobPosting
 from job_utils import embeddings

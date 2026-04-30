@@ -5,12 +5,12 @@ Provides lazy-initialized LLM instance and all LangChain chains used across the 
 No Flask routes here — pure business logic.
 """
 
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.prompts import PromptTemplate
+from langchain_classic.chains import LLMChain
 
 
 def get_llm(app=None):
-    """Get or create LLM instance (lazy initialization, cached on app.extensions)"""
+    """Get or create the default (non-streaming) LLM instance, cached on app.extensions."""
     from flask import current_app
     from langchain_xai import ChatXAI
 
@@ -31,6 +31,38 @@ def get_llm(app=None):
         )
 
     return app.extensions['llm']
+
+
+def get_streaming_llm(app=None):
+    """
+    Streaming-enabled LLM instance for the chat endpoint.
+
+    Cached separately from the default LLM so existing chains (resume analysis,
+    job matching, roadmap) keep their non-streaming behaviour and current
+    callbacks. Token-level streaming is opt-in via the callback handler passed
+    at invoke time.
+    """
+    from flask import current_app
+    from langchain_xai import ChatXAI
+
+    if app is None:
+        app = current_app._get_current_object()
+
+    if not hasattr(app, 'extensions'):
+        app.extensions = {}
+
+    if 'llm_streaming' not in app.extensions:
+        api_key = app.config.get('XAI_API_KEY')
+        if not api_key:
+            raise RuntimeError("XAI_API_KEY not configured")
+        app.extensions['llm_streaming'] = ChatXAI(
+            model="grok-3",
+            temperature=0,
+            api_key=api_key,
+            streaming=True,   # ← emits on_llm_new_token per chunk
+        )
+
+    return app.extensions['llm_streaming']
 
 
 

@@ -5,15 +5,15 @@ Job Utilities - Shared functions for job embedding and FAISS indexing
 import os
 import threading
 from datetime import datetime
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 from models import db, JobPosting
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
 
 
 # Initialize embeddings (shared across the app)
-embeddings = HuggingFaceEmbeddings()
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
 
 JOB_VECTOR_INDEX = 'job_vector_index'
 

@@ -15,7 +15,7 @@ from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from job_fetcher import AdzunaJobFetcher
 from job_utils import get_job_faiss_index, build_job_faiss_index, cosine_similarity
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_xai import ChatXAI
 import PyPDF2
 import numpy as np
