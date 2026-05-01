@@ -5,7 +5,10 @@ This module manages the scheduling of the autonomous Job Scout Agent using APSch
 Supports both automatic scheduled runs and manual triggers.
 """
 
-from apscheduler.schedulers.background import BackgroundScheduler
+try:
+    from apscheduler.schedulers.gevent import GeventScheduler as _Scheduler
+except ImportError:
+    from apscheduler.schedulers.background import BackgroundScheduler as _Scheduler
 from apscheduler.triggers.cron import CronTrigger
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -53,9 +56,7 @@ class AgentScheduler:
             return
 
         try:
-            # Create BackgroundScheduler
-            # This runs in a separate thread and doesn't block Flask
-            self.scheduler = BackgroundScheduler(
+            self.scheduler = _Scheduler(
                 daemon=True,  # Daemon thread exits when main program exits
                 job_defaults={
                     'coalesce': True,  # Combine missed runs

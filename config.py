@@ -16,6 +16,14 @@ class Config:
         'sqlite:///' + os.path.join(_PROJECT_ROOT, 'instance', 'career_coach.db')
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # With gevent, many greenlets share one worker process. Increase pool size
+    # so they don't queue up waiting for a DB connection.
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_size": 20,
+        "max_overflow": 10,
+        "pool_timeout": 30,
+        "pool_recycle": 1800,
+    }
 
     # API Keys (optional for migrations)
     XAI_API_KEY = os.environ.get('XAI_API_KEY')
