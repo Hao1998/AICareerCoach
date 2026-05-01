@@ -7,6 +7,16 @@ Use for Flask-Migrate commands: flask --app wsgi db migrate
 The factory pattern allows migrations to run without requiring API keys.
 """
 
+# gevent monkey patching must happen before any other imports so that
+# stdlib socket/threading/ssl are replaced with gevent-aware versions.
+# This turns blocking I/O (Grok API, Adzuna, DB) into cooperative yields,
+# allowing thousands of SSE streams to run on a small number of OS threads.
+try:
+    from gevent import monkey
+    monkey.patch_all()
+except ImportError:
+    pass  # gevent not installed (e.g. during local dev with flask run)
+
 import os
 from factory import create_app
 

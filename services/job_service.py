@@ -10,6 +10,17 @@ import numpy as np
 from langsmith import traceable
 
 from job_utils import embeddings, get_job_faiss_index
+
+# FAISS and HuggingFace embeddings are CPU-bound C extensions that gevent
+# cannot patch. Spawning them on gevent's thread pool hands the blocking work
+# to a real OS thread and yields the event loop to other greenlets.
+try:
+    from gevent import get_hub as _get_hub
+    def _run_in_thread(fn, *args, **kwargs):
+        return _get_hub().threadpool.spawn(fn, *args, **kwargs).get()
+except ImportError:
+    def _run_in_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
 from models import JobPosting
 from services.llm_service import run_job_matching
 
@@ -29,12 +40,12 @@ def find_matching_jobs_old(resume_text, top_k=5):
     if not jobs:
         return []
 
-    resume_embedding = embeddings.embed_query(resume_text)
+    resume_embedding = _run_in_thread(embeddings.embed_query, resume_text)
 
     matches = []
     for job in jobs:
         job_text = f"{job.title} {job.description} {job.requirements or ''}"
-        job_embedding = embeddings.embed_query(job_text)
+        job_embedding = _run_in_thread(embeddings.embed_query, job_text)
         similarity_score = calculate_embedding_similarity(resume_embedding, job_embedding)
 
         try:
@@ -76,9 +87,10 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             print("No job index available, falling back to old method")
             return find_matching_jobs_old(resume_text, top_k)
 
-        docs_with_scores = job_index.similarity_search_with_score(
+        docs_with_scores = _run_in_thread(
+            job_index.similarity_search_with_score,
             resume_text,
-            k=min(candidate_k, job_index.index.ntotal)
+            k=min(candidate_k, job_index.index.ntotal),
         )
 
         if not docs_with_scores:
