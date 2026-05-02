@@ -20,9 +20,10 @@ class Config:
     # so they don't queue up waiting for a DB connection.
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_size": 20,
-        "max_overflow": 10,
+        "max_overflow": 40,   # allow burst headroom up to 60 total connections
         "pool_timeout": 30,
         "pool_recycle": 1800,
+        "pool_pre_ping": True,  # discard stale connections before use
     }
 
     # API Keys (optional for migrations)
@@ -35,6 +36,15 @@ class Config:
 
     # Job vector index — same reason
     JOB_VECTOR_INDEX = os.path.join(_PROJECT_ROOT, 'job_vector_index')
+
+    # LangGraph checkpoint DB — absolute path so it lands in the instance folder
+    # regardless of the working directory.  Override with CHECKPOINT_DB_PATH env
+    # var to point at a PostgreSQL DSN (e.g. postgresql://user:pass@host/db) for
+    # production; leave unset to use the default SQLite file in development.
+    CHECKPOINT_DB_PATH = os.environ.get(
+        'CHECKPOINT_DB_PATH',
+        os.path.join(_PROJECT_ROOT, 'instance', 'checkpoints.db')
+    )
 
 class DevelopmentConfig(Config):
     """Development configuration"""
