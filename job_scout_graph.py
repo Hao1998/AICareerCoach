@@ -76,7 +76,7 @@ class JobScoutState(TypedDict):
 # Graph builder
 # ---------------------------------------------------------------------------
 
-def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable):
+def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable, checkpointer=None):
     """
     Build and compile the LangGraph StateGraph for the Job Scout Agent.
 
@@ -90,6 +90,17 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable):
 
     Returns:
         Compiled LangGraph graph ready for .invoke()
+
+    Note on checkpointer:
+        When a checkpointer is supplied the graph serialises the full
+        JobScoutState to the backing store after every node.  Each run must be
+        given a unique thread_id via the invocation config:
+
+            graph.invoke(state, config={"configurable": {"thread_id": "run-42"}})
+
+        This enables crash recovery: if the process dies mid-run, calling
+        invoke() again with the same thread_id resumes from the last
+        completed node rather than restarting from scratch.
     """
 
     # ------------------------------------------------------------------ #
@@ -342,4 +353,4 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable):
     graph.add_edge("find_matches", "finalize")
     graph.add_edge("finalize", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

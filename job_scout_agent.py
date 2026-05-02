@@ -10,6 +10,7 @@ This agent runs autonomously to:
 
 import os
 import json
+import sqlite3
 import threading
 from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
@@ -20,6 +21,45 @@ from langchain_xai import ChatXAI
 import PyPDF2
 import numpy as np
 from job_scout_graph import build_job_scout_graph
+
+# ---------------------------------------------------------------------------
+# Checkpointer — single instance per process, initialised lazily on first use.
+# Dev: SQLite file.  Prod: PostgreSQL (set CHECKPOINT_DB_PATH to a psycopg3 DSN).
+# ---------------------------------------------------------------------------
+_checkpointer = None
+_checkpointer_lock = threading.Lock()
+
+
+def _get_checkpointer(app):
+    """Return (and lazily create) the process-level LangGraph checkpointer."""
+    global _checkpointer
+    if _checkpointer is not None:
+        return _checkpointer
+
+    with _checkpointer_lock:
+        if _checkpointer is not None:
+            return _checkpointer
+
+        path_or_dsn = app.config.get('CHECKPOINT_DB_PATH', '')
+
+        if path_or_dsn.startswith('postgresql'):
+            from langgraph.checkpoint.postgres import PostgresSaver
+            # Strip SQLAlchemy dialect prefix if present: postgresql+psycopg2:// → postgresql://
+            dsn = path_or_dsn
+            if '+' in dsn.split('://')[0]:
+                scheme, rest = dsn.split('://', 1)
+                dsn = f"{scheme.split('+')[0]}://{rest}"
+            cp = PostgresSaver.from_conn_string(dsn)
+            cp.setup()  # creates checkpoint tables once (idempotent)
+        else:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            os.makedirs(os.path.dirname(path_or_dsn), exist_ok=True)
+            conn = sqlite3.connect(path_or_dsn, check_same_thread=False)
+            cp = SqliteSaver(conn)
+
+        _checkpointer = cp
+        return _checkpointer
+
 
 # ---------------------------------------------------------------------------
 # In-memory progress store
@@ -95,8 +135,11 @@ class JobScoutAgent:
             temperature=0.7,
         )
 
-        # Build the LangGraph pipeline (nodes close over `self`)
-        self.graph = build_job_scout_graph(self, _emit_progress, _mark_done)
+        # Build the LangGraph pipeline (nodes close over `self`).
+        # The checkpointer persists state after every node so a crashed run can
+        # be resumed by calling invoke() again with the same thread_id.
+        checkpointer = _get_checkpointer(app)
+        self.graph = build_job_scout_graph(self, _emit_progress, _mark_done, checkpointer)
 
         # Job matching prompt template
         self.matching_prompt = PromptTemplate(
@@ -196,8 +239,13 @@ Return ONLY valid JSON in this format:
                 "error": None,
             }
 
+            # thread_id uniquely identifies this run to the checkpointer.
+            # If the process crashes mid-run, invoking with the same thread_id
+            # and initial_state=None resumes from the last completed node.
+            invoke_config = {"configurable": {"thread_id": f"run-{run_id}"}}
+
             try:
-                final_state = self.graph.invoke(initial_state)
+                final_state = self.graph.invoke(initial_state, config=invoke_config)
             except Exception as e:
                 # Unexpected graph-level exception
                 run_history.status = 'failed'

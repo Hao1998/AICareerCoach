@@ -10,7 +10,7 @@ try:
 except ImportError:
     from apscheduler.schedulers.background import BackgroundScheduler as _Scheduler
 from apscheduler.triggers.cron import CronTrigger
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import logging
 import os
@@ -42,7 +42,11 @@ class AgentScheduler:
         self.agent_class = agent_class
         self.scheduler = None
         self._is_running = False
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='agent')
+        # max_workers controls how many users run concurrently in a batch.
+        # Each worker holds its own DB connection via SQLAlchemy's pool, so
+        # raise this (and SQLALCHEMY_ENGINE_OPTIONS pool_size) together.
+        max_workers = int(os.environ.get('AGENT_WORKER_THREADS', '10'))
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='agent')
 
     def start(self):
         """
@@ -124,26 +128,28 @@ class AgentScheduler:
                     return []
 
                 logger.info(f"Running agent for {len(user_configs)} users at {schedule_time} ({timezone_str or 'UTC'})")
-                # Create agent instance
+                # One shared agent instance per batch — the compiled LangGraph
+                # graph is thread-safe; each run is isolated by its thread_id.
                 agent = self.agent_class(self.app)
 
-                # Run for each user at this time
+                # Submit all users to the thread pool concurrently.
+                future_to_uid = {
+                    self._executor.submit(
+                        agent.run_for_user, config.user_id, 'scheduled'
+                    ): config.user_id
+                    for config in user_configs
+                }
+
                 results = []
-                for user_config in user_configs:
+                for future in as_completed(future_to_uid):
+                    uid = future_to_uid[future]
                     try:
-                        result = agent.run_for_user(user_config.user_id, run_type='scheduled')
-                        results.append({
-                            'user_id': user_config.user_id,
-                            'result': result
-                        })
+                        results.append({'user_id': uid, 'result': future.result()})
                     except Exception as user_error:
-                        logger.error(f"Error running agent for user {user_config.user_id}: {user_error}")
+                        logger.error(f"Error running agent for user {uid}: {user_error}")
                         results.append({
-                            'user_id': user_config.user_id,
-                            'result': {
-                                'status': 'failed',
-                                'error': str(user_error)
-                            }
+                            'user_id': uid,
+                            'result': {'status': 'failed', 'error': str(user_error)},
                         })
 
                 # Log summary

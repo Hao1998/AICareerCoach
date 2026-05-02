@@ -21,16 +21,19 @@ Layer 2 — Authorization (per-user scoping):
     Cross-user access is architecturally impossible, not just policy.
 
 Layer 3 — Audit logging:
-    Every tool call is appended to mcp_audit.log with:
-    timestamp | key fingerprint (first 8 chars) | tool | params
+    Every tool call is enqueued fire-and-forget to mcp_audit.log via an
+    async background writer — zero latency impact on tool calls.
 ──────────────────────────────────────────────────────────────────────────────
 """
 
+import asyncio
 import json
 import logging
 import os
 import sys
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -152,14 +155,46 @@ print(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LAYER 3 — Audit logging
+# CONCURRENCY PRIMITIVES
+# ─────────────────────────────────────────────────────────────────────────────
+
+# One real OS thread per blocking call (Flask/SQLAlchemy/FAISS/PDF I/O).
+# All tools are async; the event loop is never stalled by a DB query or LLM call.
+_THREAD_WORKERS = int(os.getenv("MCP_THREAD_WORKERS", str(min(32, (os.cpu_count() or 1) + 4))))
+_executor = ThreadPoolExecutor(max_workers=_THREAD_WORKERS, thread_name_prefix="mcp-worker")
+
+# Cap simultaneous LLM (XAI) calls to avoid quota exhaustion under burst traffic.
+_LLM_CONCURRENCY = int(os.getenv("MCP_MAX_CONCURRENT_LLM", "5"))
+
+# Initialised inside _lifespan so they bind to the correct running event loop.
+_audit_queue: asyncio.Queue | None = None
+_llm_semaphore: asyncio.Semaphore | None = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYER 3 — Audit logging (async, fire-and-forget)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _AUDIT_LOG = Path(_PROJECT_ROOT) / "mcp_audit.log"
 
 
-def _audit(tool_name: str, extra: dict | None = None) -> None:
-    """Append one line to mcp_audit.log for every tool invocation."""
+def _append_audit_line(line: str) -> None:
+    """Sync write — runs on the executor thread, never on the event loop."""
+    with open(_AUDIT_LOG, "a") as f:
+        f.write(line)
+
+
+async def _audit_log_writer() -> None:
+    """Background coroutine: drains audit queue and writes without blocking tools."""
+    loop = asyncio.get_running_loop()
+    while True:
+        entry = await _audit_queue.get()  # type: ignore[union-attr]
+        line = json.dumps(entry) + "\n"
+        await loop.run_in_executor(_executor, _append_audit_line, line)
+
+
+async def _audit(tool_name: str, extra: dict | None = None) -> None:
+    """Enqueue an audit entry — returns immediately, never blocks a tool call."""
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "key": _KEY_FINGERPRINT,
@@ -167,36 +202,48 @@ def _audit(tool_name: str, extra: dict | None = None) -> None:
         "tool": tool_name,
         **(extra or {}),
     }
-    with open(_AUDIT_LOG, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    if _audit_queue is not None:
+        try:
+            _audit_queue.put_nowait(entry)
+        except asyncio.QueueFull:
+            pass  # drop under extreme load rather than block a tool call
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SERVER LIFESPAN — starts/stops background tasks and the thread pool
+# ─────────────────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def _lifespan(server):
+    global _audit_queue, _llm_semaphore
+    _audit_queue = asyncio.Queue(maxsize=10_000)
+    _llm_semaphore = asyncio.Semaphore(_LLM_CONCURRENCY)
+    writer = asyncio.create_task(_audit_log_writer())
+    print(
+        f"✅ MCP lifespan started  "
+        f"| workers={_THREAD_WORKERS}  "
+        f"| llm_concurrency={_LLM_CONCURRENCY}",
+        file=sys.stderr,
+    )
+    try:
+        yield
+    finally:
+        writer.cancel()
+        _executor.shutdown(wait=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MCP server instance
 # ─────────────────────────────────────────────────────────────────────────────
 
-mcp = FastMCP(name="AICareerCoach")
+mcp = FastMCP(name="AICareerCoach", lifespan=_lifespan)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TOOLS — user_id is NO LONGER a parameter.
-# It is derived from the authenticated key above (_AUTHENTICATED_USER_ID).
-# The model cannot access another user's data even if it tries.
+# SYNC HELPERS — run inside the thread pool, never on the event loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
-def find_matching_jobs(top_k: int = 5) -> str:
-    """
-    Find the top matching jobs for the authenticated user based on their active resume.
-    Uses FAISS vector search + LLM scoring (two-stage pipeline).
-
-    Args:
-        top_k: Number of top matches to return (default: 5)
-
-    Returns:
-        JSON string with list of matched jobs, scores, matched skills, and skill gaps
-    """
-    _audit("find_matching_jobs", {"top_k": top_k})
+def _find_matching_jobs_sync(top_k: int) -> str:
     with flask_app.app_context():
         from models import Resume
         from services.job_service import find_matching_jobs as _find_jobs
@@ -232,16 +279,7 @@ def find_matching_jobs(top_k: int = 5) -> str:
         return json.dumps({"success": True, "matches": result})
 
 
-@mcp.tool()
-def analyze_resume() -> str:
-    """
-    Analyze the authenticated user's active resume and return a structured career summary.
-    Covers: career objective, skills, experience, education, achievements.
-
-    Returns:
-        JSON string with resume analysis text
-    """
-    _audit("analyze_resume")
+def _analyze_resume_sync() -> str:
     with flask_app.app_context():
         from models import Resume
         from services.resume_service import extract_text_from_pdf
@@ -274,19 +312,7 @@ def analyze_resume() -> str:
         })
 
 
-@mcp.tool()
-def get_skill_gaps(job_id: int) -> str:
-    """
-    Get the skill gaps between the authenticated user's resume and a specific job posting.
-    Useful for interview prep and upskilling recommendations.
-
-    Args:
-        job_id: The job posting ID (get this from find_matching_jobs first)
-
-    Returns:
-        JSON string with matched skills, gaps, and a recommendation
-    """
-    _audit("get_skill_gaps", {"job_id": job_id})
+def _get_skill_gaps_sync(job_id: int) -> str:
     with flask_app.app_context():
         from models import Resume, JobPosting, JobMatch
         from services.resume_service import extract_text_from_pdf
@@ -338,8 +364,156 @@ def get_skill_gaps(job_id: int) -> str:
         })
 
 
+def _ask_resume_question_sync(question: str) -> str:
+    with flask_app.app_context():
+        from services.resume_service import perform_qa
+        try:
+            answer = perform_qa(question, _AUTHENTICATED_USER_ID)
+            return json.dumps({"success": True, "answer": answer})
+        except Exception as exc:
+            return json.dumps({"success": False, "error": str(exc)})
+
+
+def _get_recent_job_matches_sync(limit: int) -> str:
+    with flask_app.app_context():
+        from models import JobMatch
+        from sqlalchemy.orm import joinedload
+
+        # Single query — joinedload fetches JobPosting in the same round-trip,
+        # replacing the previous N+1 pattern (1 query per match row).
+        matches = (
+            JobMatch.query
+            .options(joinedload(JobMatch.job))
+            .filter_by(user_id=_AUTHENTICATED_USER_ID)
+            .order_by(JobMatch.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        if not matches:
+            return json.dumps({"success": True, "matches": [], "message": "No matches found yet."})
+
+        result = [
+            {
+                "job_id": m.job_id,
+                "title": m.job.title if m.job else "Unknown",
+                "company": m.job.company if m.job else "Unknown",
+                "match_score": m.match_score,
+                "matched_skills": json.loads(m.matched_skills or "[]"),
+                "skill_gaps": json.loads(m.gaps or "[]"),
+                "recommendation": m.recommendation,
+                "matched_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in matches
+        ]
+        return json.dumps({"success": True, "matches": result})
+
+
+def _trigger_job_scout_sync() -> str:
+    with flask_app.app_context():
+        from job_scout_agent import JobScoutAgent
+        try:
+            agent = JobScoutAgent(flask_app)
+            run_id = agent.run_for_user(_AUTHENTICATED_USER_ID, run_type="mcp_triggered")
+            return json.dumps({
+                "success": True,
+                "run_id": run_id,
+                "message": "Job Scout started. Results will be saved to database automatically.",
+            })
+        except Exception as exc:
+            return json.dumps({"success": False, "error": str(exc)})
+
+
+def _get_active_resume_sync() -> str:
+    with flask_app.app_context():
+        from models import Resume
+        from services.resume_service import extract_text_from_pdf
+
+        resume = (
+            Resume.query.filter_by(user_id=_AUTHENTICATED_USER_ID, is_active=True)
+            .order_by(Resume.uploaded_at.desc())
+            .first()
+        )
+        if not resume:
+            return "No active resume found."
+        return extract_text_from_pdf(resume.file_path)
+
+
+def _get_resume_analysis_sync() -> str:
+    with flask_app.app_context():
+        from models import Resume
+
+        resume = (
+            Resume.query.filter_by(user_id=_AUTHENTICATED_USER_ID, is_active=True)
+            .order_by(Resume.uploaded_at.desc())
+            .first()
+        )
+        if not resume or not resume.analysis:
+            return "No analysis available. Upload a resume first."
+        return resume.analysis
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOOLS — async wrappers that dispatch to the thread pool
+# user_id is NO LONGER a parameter; derived from the authenticated key above.
+# The model cannot access another user's data even if it tries.
+# ─────────────────────────────────────────────────────────────────────────────
+
 @mcp.tool()
-def ask_resume_question(question: str) -> str:
+async def find_matching_jobs(top_k: int = 5) -> str:
+    """
+    Find the top matching jobs for the authenticated user based on their active resume.
+    Uses FAISS vector search + LLM scoring (two-stage pipeline).
+
+    Args:
+        top_k: Number of top matches to return (default: 5)
+
+    Returns:
+        JSON string with list of matched jobs, scores, matched skills, and skill gaps
+    """
+    await _audit("find_matching_jobs", {"top_k": top_k})
+    sem = _llm_semaphore or asyncio.Semaphore(_LLM_CONCURRENCY)
+    loop = asyncio.get_running_loop()
+    async with sem:
+        return await loop.run_in_executor(_executor, _find_matching_jobs_sync, top_k)
+
+
+@mcp.tool()
+async def analyze_resume() -> str:
+    """
+    Analyze the authenticated user's active resume and return a structured career summary.
+    Covers: career objective, skills, experience, education, achievements.
+
+    Returns:
+        JSON string with resume analysis text
+    """
+    await _audit("analyze_resume")
+    sem = _llm_semaphore or asyncio.Semaphore(_LLM_CONCURRENCY)
+    loop = asyncio.get_running_loop()
+    async with sem:
+        return await loop.run_in_executor(_executor, _analyze_resume_sync)
+
+
+@mcp.tool()
+async def get_skill_gaps(job_id: int) -> str:
+    """
+    Get the skill gaps between the authenticated user's resume and a specific job posting.
+    Useful for interview prep and upskilling recommendations.
+
+    Args:
+        job_id: The job posting ID (get this from find_matching_jobs first)
+
+    Returns:
+        JSON string with matched skills, gaps, and a recommendation
+    """
+    await _audit("get_skill_gaps", {"job_id": job_id})
+    sem = _llm_semaphore or asyncio.Semaphore(_LLM_CONCURRENCY)
+    loop = asyncio.get_running_loop()
+    async with sem:
+        return await loop.run_in_executor(_executor, _get_skill_gaps_sync, job_id)
+
+
+@mcp.tool()
+async def ask_resume_question(question: str) -> str:
     """
     Ask a natural language question about your own resume.
     Uses RAG (FAISS retrieval + LLM) to answer from resume content.
@@ -355,18 +529,15 @@ def ask_resume_question(question: str) -> str:
     Returns:
         JSON string with the answer
     """
-    _audit("ask_resume_question", {"question": question[:120]})
-    with flask_app.app_context():
-        from services.resume_service import perform_qa
-        try:
-            answer = perform_qa(question, _AUTHENTICATED_USER_ID)
-            return json.dumps({"success": True, "answer": answer})
-        except Exception as exc:
-            return json.dumps({"success": False, "error": str(exc)})
+    await _audit("ask_resume_question", {"question": question[:120]})
+    sem = _llm_semaphore or asyncio.Semaphore(_LLM_CONCURRENCY)
+    loop = asyncio.get_running_loop()
+    async with sem:
+        return await loop.run_in_executor(_executor, _ask_resume_question_sync, question)
 
 
 @mcp.tool()
-def get_recent_job_matches(limit: int = 10) -> str:
+async def get_recent_job_matches(limit: int = 10) -> str:
     """
     Retrieve the most recent job matches for the authenticated user.
     Reads from DB cache — faster than re-running the full matching pipeline.
@@ -377,37 +548,14 @@ def get_recent_job_matches(limit: int = 10) -> str:
     Returns:
         JSON string with list of recent job matches
     """
-    _audit("get_recent_job_matches", {"limit": limit})
-    with flask_app.app_context():
-        from models import JobMatch, JobPosting
-
-        matches = (
-            JobMatch.query.filter_by(user_id=_AUTHENTICATED_USER_ID)
-            .order_by(JobMatch.created_at.desc())
-            .limit(limit)
-            .all()
-        )
-        if not matches:
-            return json.dumps({"success": True, "matches": [], "message": "No matches found yet."})
-
-        result = []
-        for m in matches:
-            job = JobPosting.query.get(m.job_id)
-            result.append({
-                "job_id": m.job_id,
-                "title": job.title if job else "Unknown",
-                "company": job.company if job else "Unknown",
-                "match_score": m.match_score,
-                "matched_skills": json.loads(m.matched_skills or "[]"),
-                "skill_gaps": json.loads(m.gaps or "[]"),
-                "recommendation": m.recommendation,
-                "matched_at": m.created_at.isoformat() if m.created_at else None,
-            })
-        return json.dumps({"success": True, "matches": result})
+    await _audit("get_recent_job_matches", {"limit": limit})
+    loop = asyncio.get_running_loop()
+    # DB-only path, no LLM call — semaphore not needed here.
+    return await loop.run_in_executor(_executor, _get_recent_job_matches_sync, limit)
 
 
 @mcp.tool()
-def trigger_job_scout() -> str:
+async def trigger_job_scout() -> str:
     """
     Manually trigger the Job Scout agent for the authenticated user.
     Fetches fresh jobs from Adzuna → rebuilds FAISS index → finds matches → saves results.
@@ -415,19 +563,9 @@ def trigger_job_scout() -> str:
     Returns:
         JSON string with run_id for tracking progress
     """
-    _audit("trigger_job_scout")
-    with flask_app.app_context():
-        from job_scout_agent import JobScoutAgent
-        try:
-            agent = JobScoutAgent(flask_app)
-            run_id = agent.run_for_user(_AUTHENTICATED_USER_ID, run_type="mcp_triggered")
-            return json.dumps({
-                "success": True,
-                "run_id": run_id,
-                "message": "Job Scout started. Results will be saved to database automatically.",
-            })
-        except Exception as exc:
-            return json.dumps({"success": False, "error": str(exc)})
+    await _audit("trigger_job_scout")
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, _trigger_job_scout_sync)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -435,38 +573,19 @@ def trigger_job_scout() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.resource("resume://me/active")
-def get_active_resume() -> str:
+async def get_active_resume() -> str:
     """Raw resume text for the authenticated user."""
-    _audit("resource:resume/active")
-    with flask_app.app_context():
-        from models import Resume
-        from services.resume_service import extract_text_from_pdf
-
-        resume = (
-            Resume.query.filter_by(user_id=_AUTHENTICATED_USER_ID, is_active=True)
-            .order_by(Resume.uploaded_at.desc())
-            .first()
-        )
-        if not resume:
-            return "No active resume found."
-        return extract_text_from_pdf(resume.file_path)
+    await _audit("resource:resume/active")
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, _get_active_resume_sync)
 
 
 @mcp.resource("resume://me/analysis")
-def get_resume_analysis_resource() -> str:
+async def get_resume_analysis_resource() -> str:
     """Cached resume analysis for the authenticated user."""
-    _audit("resource:resume/analysis")
-    with flask_app.app_context():
-        from models import Resume
-
-        resume = (
-            Resume.query.filter_by(user_id=_AUTHENTICATED_USER_ID, is_active=True)
-            .order_by(Resume.uploaded_at.desc())
-            .first()
-        )
-        if not resume or not resume.analysis:
-            return "No analysis available. Upload a resume first."
-        return resume.analysis
+    await _audit("resource:resume/analysis")
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, _get_resume_analysis_sync)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
