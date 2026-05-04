@@ -11,6 +11,8 @@ from datetime import datetime
 from flask import Blueprint, request, render_template, redirect, url_for, flash, current_app
 from flask_login import login_user, logout_user, login_required, current_user
 
+from sqlalchemy.orm import joinedload
+
 from models import db, User, Resume, JobMatch
 from form import LoginForm, RegistrationForm
 
@@ -87,5 +89,8 @@ def logout():
 @login_required
 def profile():
     resumes = current_user.resumes.filter_by(is_active=True).order_by(Resume.uploaded_at.desc()).all()
-    recent_matches = current_user.job_matches.order_by(JobMatch.created_at.desc()).limit(10).all()
+    recent_matches = (current_user.job_matches
+                      .options(joinedload(JobMatch.job))
+                      .order_by(JobMatch.created_at.desc())
+                      .limit(10).all())
     return render_template('profile.html', user=current_user, resumes=resumes, recent_matches=recent_matches)

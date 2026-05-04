@@ -11,10 +11,12 @@ import re
 from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app
 from flask_login import login_required, current_user
 
+from sqlalchemy.orm import joinedload
+
 from models import db, JobPosting, JobMatch, Resume, AgentConfig
 from job_fetcher import fetch_jobs_from_adzuna
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
-from services.resume_service import extract_text_from_pdf
+from services.resume_service import get_resume_text
 from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring
 from services.job_service import find_matching_jobs
 
@@ -220,9 +222,9 @@ def get_jobs_api():
 @login_required
 def get_matches_api(resume_id):
     Resume.query.filter_by(id=resume_id, user_id=current_user.id).first_or_404()
-    matches = JobMatch.query.filter_by(resume_id=resume_id, user_id=current_user.id).order_by(
-        JobMatch.match_score.desc()
-    ).all()
+    matches = JobMatch.query.options(joinedload(JobMatch.job)).filter_by(
+        resume_id=resume_id, user_id=current_user.id
+    ).order_by(JobMatch.match_score.desc()).all()
     return jsonify([match.to_dict() for match in matches])
 
 
@@ -259,7 +261,7 @@ def check_job_match(job_id):
                 "recommendation": existing_match.recommendation or "",
             })
 
-        resume_text = extract_text_from_pdf(latest_resume.file_path)
+        resume_text = get_resume_text(latest_resume)
         analysis_result = None
 
         try:
@@ -335,7 +337,7 @@ def tailor_resume_for_job(job_id):
             })
 
         # Run tailoring chain
-        resume_text = extract_text_from_pdf(latest_resume.file_path)
+        resume_text = get_resume_text(latest_resume)
         # result = get_resume_tailoring_chain().invoke({
         #     "resume": resume_text[:4000],
         #     "job_title": job.title,

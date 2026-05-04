@@ -23,6 +23,7 @@ requests
 APScheduler>=3.10.0
 Flask-Limiter>=3.5.0
 langsmith>=0.1.0
+ragas>=0.2.0
 python-dotenv>=1.0.0
 mcp[cli]>=1.0.0
 gunicorn>=21.2.0
