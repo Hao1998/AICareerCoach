@@ -11,6 +11,7 @@ from datetime import datetime
 
 from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app
 from flask_login import login_required, current_user
+from flask_limiter.errors import RateLimitExceeded
 from werkzeug.utils import secure_filename
 from langchain_community.vectorstores import FAISS
 
@@ -19,8 +20,14 @@ from job_utils import embeddings
 from services.resume_service import extract_text_from_pdf, get_resume_text, perform_qa, text_splitter
 from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain
 from services.job_service import find_matching_jobs
+from factory import limiter
 
 resume_bp = Blueprint('resume', __name__)
+
+
+@resume_bp.errorhandler(RateLimitExceeded)
+def handle_rate_limit(e):
+    return jsonify({"error": "Too many requests. Please slow down."}), 429
 
 
 @resume_bp.route('/upload', methods=['POST'])
@@ -115,6 +122,7 @@ def check_resume_status():
 
 @resume_bp.route('/find-matching-jobs', methods=['POST'])
 @login_required
+@limiter.limit("5 per minute; 50 per day")
 def find_matching_jobs_endpoint():
     try:
         latest_resume = current_user.resumes.filter_by(is_active=True).order_by(
@@ -139,6 +147,7 @@ def find_matching_jobs_endpoint():
 
 @resume_bp.route('/api/prepare-roadmap', methods=['POST'])
 @login_required
+@limiter.limit("5 per minute; 30 per day")
 def prepare_roadmap():
     try:
         data = request.get_json()

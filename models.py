@@ -99,7 +99,7 @@ class JobPosting(db.Model):
     requirements = db.Column(db.Text)
     salary_range = db.Column(db.String(100))
     posted_date = db.Column(db.DateTime, default=datetime.utcnow)
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(db.Boolean, default=True, index=True)
 
     # Store embeddings as JSON string for simplicity
     embedding_ids = db.Column(db.Text)  # Store FAISS indices (deprecated, use embedding instead)
@@ -136,19 +136,23 @@ class JobMatch(db.Model):
     resume_id = db.Column(db.Integer, db.ForeignKey('resumes.id'), nullable=False, index=True)
     resume_filename = db.Column(db.String(200), nullable=False)  # Keep for backward compatibility
     job_id = db.Column(db.Integer, db.ForeignKey('job_postings.id'), nullable=False)
-    match_score = db.Column(db.Float, nullable=False)
+    match_score = db.Column(db.Float, nullable=False, index=True)
     matched_skills = db.Column(db.Text)  # JSON string of matched skills
     gaps = db.Column(db.Text)  # JSON string of skill gaps
     recommendation = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    agent_generated = db.Column(db.Boolean, default=False)  # Whether found by agent
+    agent_generated = db.Column(db.Boolean, default=False, index=True)  # Whether found by agent
     agent_run_id = db.Column(db.Integer, db.ForeignKey('agent_run_history.id'), nullable=True)
     user_feedback = db.Column(db.String(50))  # 'interested', 'not_interested', 'applied', etc.
     feedback_at = db.Column(db.DateTime)
     tailoring_result = db.Column(db.Text, nullable=True)  # Cached JSON from ATS resume tailoring
 
     job = db.relationship('JobPosting', backref='matches')
+
+    __table_args__ = (
+        db.Index('ix_job_matches_user_agent', 'user_id', 'agent_generated'),
+    )
 
     def to_dict(self):
         return {
