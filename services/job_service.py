@@ -6,7 +6,9 @@ No Flask routes here — pure business logic.
 """
 
 import json
+import logging
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
 from job_utils import embeddings, get_job_faiss_index
@@ -23,6 +25,12 @@ except ImportError:
         return fn(*args, **kwargs)
 from models import JobPosting
 from services.llm_service import run_job_matching
+
+logger = logging.getLogger(__name__)
+
+# Max concurrent LLM calls per find_matching_jobs invocation.
+# Grok-3 rate limits are generous; keep this ≤ top_k to avoid wasted calls.
+_LLM_CONCURRENCY = 5
 
 
 def calculate_embedding_similarity(resume_embedding, job_embedding):
@@ -71,20 +79,43 @@ def find_matching_jobs_old(resume_text, top_k=5):
     return matches[:top_k]
 
 
+def _analyze_job(resume_text: str, job: JobPosting, similarity_score: float) -> dict:
+    """Run one LLM job-match analysis. Called concurrently from find_matching_jobs."""
+    try:
+        analysis_result = run_job_matching(
+            resume=resume_text[:3000],
+            job_title=job.title,
+            company=job.company,
+            job_description=job.description[:1000],
+            job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
+        )
+        analysis = json.loads(analysis_result)
+    except Exception as e:
+        logger.warning("LLM analysis failed for job %s: %s", job.id, e)
+        analysis = {
+            "match_score": similarity_score * 100,
+            "matched_skills": [],
+            "skill_gaps": [],
+            "recommendation": "Analysis not available",
+        }
+    return {"job": job, "similarity_score": similarity_score, "analysis": analysis}
+
+
 @traceable(run_type="chain", name="job-matching")
 def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
     """
-    [OPTIMIZED] Two-stage job matching using FAISS + LLM.
+    Two-stage job matching: FAISS candidate retrieval → parallel LLM analysis.
 
     Stage 1: Fast FAISS vector search retrieves top candidate_k jobs.
-    Stage 2: LLM analysis only on the top_k candidates.
-    ~60-100x faster than brute-force for large job databases.
+    Stage 2: LLM analysis on the top_k candidates runs concurrently
+             (up to _LLM_CONCURRENCY threads), cutting wall-time from
+             ~N×LLM_latency down to ~1×LLM_latency.
     """
     try:
         job_index = get_job_faiss_index()
 
         if job_index is None:
-            print("No job index available, falling back to old method")
+            logger.warning("No job index available, falling back to brute-force")
             return find_matching_jobs_old(resume_text, top_k)
 
         docs_with_scores = _run_in_thread(
@@ -96,39 +127,60 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         if not docs_with_scores:
             return []
 
-        matches = []
+        # --- Stage 1: batch-load all candidate jobs in a single query ---
+        candidate_meta = []
         for doc, distance in docs_with_scores[:top_k]:
             job_id = doc.metadata.get("job_id")
-            job = JobPosting.query.get(job_id)
-
-            if not job or not job.is_active:
-                continue
-
-            # Convert L2 distance to cosine similarity approximation
             similarity_score = max(0, min(1, 1 - (distance ** 2 / 2)))
+            candidate_meta.append((job_id, similarity_score))
 
-            try:
-                analysis_result = run_job_matching(
-                    resume=resume_text[:3000],
-                    job_title=job.title,
-                    company=job.company,
-                    job_description=job.description[:1000],
-                    job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
-                )
-                analysis = json.loads(analysis_result)
-            except Exception as e:
-                print(f"LLM analysis failed for job {job.id}: {e}")
-                analysis = {
-                    "match_score": similarity_score * 100,
-                    "matched_skills": [],
-                    "skill_gaps": [],
-                    "recommendation": "Analysis not available"
-                }
+        job_ids = [jid for jid, _ in candidate_meta]
+        jobs_by_id = {
+            j.id: j
+            for j in JobPosting.query.filter(
+                JobPosting.id.in_(job_ids), JobPosting.is_active == True
+            ).all()
+        }
 
-            matches.append({'job': job, 'similarity_score': similarity_score, 'analysis': analysis})
+        active_candidates = [
+            (jobs_by_id[jid], score)
+            for jid, score in candidate_meta
+            if jid in jobs_by_id
+        ]
 
-        return matches
+        if not active_candidates:
+            return []
+
+        # --- Stage 2: parallel LLM analysis ---
+        # Preserve FAISS ranking order in the output even though futures complete
+        # out of order, so the caller always gets the best-ranked jobs first.
+        ordered_results = [None] * len(active_candidates)
+
+        with ThreadPoolExecutor(max_workers=_LLM_CONCURRENCY) as pool:
+            future_to_idx = {
+                pool.submit(_analyze_job, resume_text, job, score): idx
+                for idx, (job, score) in enumerate(active_candidates)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    ordered_results[idx] = future.result()
+                except Exception as e:
+                    job, score = active_candidates[idx]
+                    logger.error("Unexpected error analyzing job %s: %s", job.id, e)
+                    ordered_results[idx] = {
+                        "job": job,
+                        "similarity_score": score,
+                        "analysis": {
+                            "match_score": score * 100,
+                            "matched_skills": [],
+                            "skill_gaps": [],
+                            "recommendation": "Analysis not available",
+                        },
+                    }
+
+        return [r for r in ordered_results if r is not None]
 
     except Exception as e:
-        print(f"Error in optimized job matching: {e}, falling back to old method")
+        logger.error("Error in optimized job matching: %s, falling back to brute-force", e)
         return find_matching_jobs_old(resume_text, top_k)

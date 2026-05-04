@@ -19,7 +19,7 @@ from langsmith import traceable
 
 from models import ChatMessage, AgentConfig, Resume, User, db, JobMatch
 from services.llm_service import get_llm, get_resume_tailoring_chain
-from services.resume_service import perform_qa, extract_text_from_pdf
+from services.resume_service import perform_qa, get_resume_text
 from services.job_service import find_matching_jobs
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ def build_tools(app, user_id):
                 return json.dumps({"success": False, "error": "No resume found. Please upload a resume first."})
 
             try:
-                resume_text = extract_text_from_pdf(resume.file_path)
+                resume_text = get_resume_text(resume)
 
                 # Fetch a wider candidate pool so preference re-ranking has room to work
                 candidates = find_matching_jobs(resume_text, top_k=20, candidate_k=40)
@@ -141,8 +141,9 @@ def build_tools(app, user_id):
         """Get the user's most recent job matches with scores and details. Use this when the user asks about their matches, previous results, or match history."""
         with app.app_context():
             from models import JobMatch
+            from sqlalchemy.orm import joinedload
             try:
-                matches = JobMatch.query.filter_by(
+                matches = JobMatch.query.options(joinedload(JobMatch.job)).filter_by(
                     user_id=user_id
                 ).order_by(JobMatch.created_at.desc()).limit(limit).all()
 
@@ -254,7 +255,7 @@ def build_tools(app, user_id):
                 return json.dumps({"success": False, "error": "No resume found. Please upload a resume first."})
 
             try:
-                resume_text = extract_text_from_pdf(resume.file_path)
+                resume_text = get_resume_text(resume)
                 chain = get_resume_tailoring_chain()
                 result = chain.invoke({
                     "resume": resume_text[:4000],

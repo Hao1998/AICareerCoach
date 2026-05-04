@@ -66,6 +66,7 @@ class Resume(db.Model):
     file_path = db.Column(db.String(500), nullable=False)
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
     analysis = db.Column(db.Text)  # JSON string of resume analysis
+    text_content = db.Column(db.Text)  # Cached extracted plain text — avoids re-parsing PDF on every request
     is_active = db.Column(db.Boolean, default=True)
     # Relationships
     job_matches = db.relationship('JobMatch', backref='resume', lazy='dynamic', cascade='all, delete-orphan')

@@ -16,7 +16,7 @@ from langchain_community.vectorstores import FAISS
 
 from models import db, Resume, JobMatch, JobPosting
 from job_utils import embeddings
-from services.resume_service import extract_text_from_pdf, perform_qa, text_splitter
+from services.resume_service import extract_text_from_pdf, get_resume_text, perform_qa, text_splitter
 from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain
 from services.job_service import find_matching_jobs
 
@@ -56,6 +56,7 @@ def upload_file():
         db.session.flush()
 
         resume_text = extract_text_from_pdf(file_path)
+        resume.text_content = resume_text  # cache so future requests skip PDF I/O
         splitted_text = text_splitter.split_text(resume_text)
 
         user_vector_dir = os.path.join('vector_index', str(current_user.id))
@@ -123,7 +124,7 @@ def find_matching_jobs_endpoint():
         if not latest_resume:
             return jsonify({"error": "No resume found. Please upload your resume first."}), 400
 
-        resume_text = extract_text_from_pdf(latest_resume.file_path)
+        resume_text = get_resume_text(latest_resume)
         resume_analysis = get_resume_analysis_chain().run(resume=resume_text)
         matching_jobs = find_matching_jobs(resume_text, top_k=5)
 
@@ -157,7 +158,7 @@ def prepare_roadmap():
         if not latest_resume:
             return jsonify({"success": False, "error": "No resume uploaded"}), 400
 
-        resume_text = extract_text_from_pdf(latest_resume.file_path)
+        resume_text = get_resume_text(latest_resume)
 
         job_match = JobMatch.query.filter_by(
             user_id=current_user.id,

@@ -34,6 +34,13 @@ def extract_text_from_pdf(pdf_path, user_id=None):
     return scan_resume_text(text, user_id=user_id)
 
 
+def get_resume_text(resume) -> str:
+    """Return resume plain text, using the DB cache when available to skip PDF I/O."""
+    if resume.text_content:
+        return resume.text_content
+    return extract_text_from_pdf(resume.file_path, user_id=resume.user_id)
+
+
 @traceable(run_type="retriever", name="resume-qa")
 def perform_qa(query, user_id):
     """Perform Q&A on the user's resume vector index"""

@@ -12,6 +12,8 @@ from datetime import datetime
 from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app, Response
 from flask_login import login_required, current_user
 
+from sqlalchemy.orm import joinedload
+
 from models import db, AgentConfig, AgentRunHistory, JobMatch
 from job_utils import update_user_preferences
 
@@ -175,7 +177,7 @@ def agent_dashboard():
         user_id=current_user.id
     ).order_by(AgentRunHistory.started_at.desc()).limit(10).all()
 
-    recent_matches = JobMatch.query.filter_by(
+    recent_matches = JobMatch.query.options(joinedload(JobMatch.job)).filter_by(
         user_id=current_user.id, agent_generated=True
     ).order_by(JobMatch.created_at.desc()).limit(10).all()
 
@@ -189,7 +191,7 @@ def agent_dashboard():
 @login_required
 def agent_run_matches(run_id):
     run = AgentRunHistory.query.filter_by(id=run_id, user_id=current_user.id).first_or_404()
-    matches = JobMatch.query.filter_by(
+    matches = JobMatch.query.options(joinedload(JobMatch.job)).filter_by(
         agent_run_id=run_id, user_id=current_user.id
     ).order_by(JobMatch.match_score.desc()).all()
     return render_template('agent_run_matches.html', run=run, matches=matches, user=current_user)
@@ -235,12 +237,12 @@ def agent_preferences():
     """Return what preferences have been learned from the user's feedback history."""
     config = AgentConfig.query.filter_by(user_id=current_user.id).first()
 
-    liked = JobMatch.query.filter(
+    liked = JobMatch.query.options(joinedload(JobMatch.job)).filter(
         JobMatch.user_id == current_user.id,
         JobMatch.user_feedback.in_(['interested', 'applied'])
     ).order_by(JobMatch.feedback_at.desc()).all()
 
-    disliked = JobMatch.query.filter_by(
+    disliked = JobMatch.query.options(joinedload(JobMatch.job)).filter_by(
         user_id=current_user.id,
         user_feedback='not_interested'
     ).order_by(JobMatch.feedback_at.desc()).all()
