@@ -14,12 +14,11 @@ from flask_limiter.errors import RateLimitExceeded
 
 from sqlalchemy.orm import joinedload
 
-from models import db, JobPosting, JobMatch, Resume, AgentConfig
-from job_fetcher import fetch_jobs_from_adzuna
+from models import db, JobPosting, JobMatch, Resume
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import get_resume_text
 from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring
-from services.job_service import find_matching_jobs
+from services.job_service import find_matching_jobs, fetch_and_save_jobs
 from factory import limiter
 
 job_bp = Blueprint('jobs', __name__)
@@ -81,27 +80,11 @@ def fetch_jobs():
             max_jobs = int(request.form.get('max_jobs', 50))
             max_days_old = int(request.form.get('max_days_old', 30))
 
-            if max_jobs < 1 or max_jobs > 200:
-                return render_template('fetch_jobs.html',
-                                       error="Please enter a number between 1 and 200 for max jobs")
-
-            config = AgentConfig.query.filter_by(user_id=current_user.id).first()
-            if not config:
-                config = AgentConfig(user_id=current_user.id)
-                db.session.add(config)
-
-            config.adzuna_location = location
-            config.adzuna_max_jobs = max_jobs
-            config.adzuna_max_days_old = max_days_old
-            db.session.commit()
-
-            stats = fetch_jobs_from_adzuna(keywords=keywords, location=location,
-                                           max_jobs=max_jobs, max_days_old=max_days_old)
+            stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old)
 
             if stats['errors'] > 0:
                 return render_template('fetch_jobs.html',
                                        error='; '.join(stats['error_messages']), stats=stats)
-
             return render_template('fetch_jobs.html', success=True, stats=stats)
 
         except ValueError as e:
@@ -122,29 +105,11 @@ def fetch_jobs_api():
         max_jobs = int(data.get('max_jobs', 50))
         max_days_old = int(data.get('max_days_old', 30))
 
-        if max_jobs < 1 or max_jobs > 200:
-            return jsonify({'success': False, 'error': 'max_jobs must be between 1 and 200'}), 400
-
-        config = AgentConfig.query.filter_by(user_id=current_user.id).first()
-        if not config:
-            config = AgentConfig(user_id=current_user.id)
-            db.session.add(config)
-
-        if location is not None:
-            config.adzuna_location = location if location.strip() else None
-        if max_jobs:
-            config.adzuna_max_jobs = max_jobs
-        if max_days_old:
-            config.adzuna_max_days_old = max_days_old
-        db.session.commit()
-
-        stats = fetch_jobs_from_adzuna(keywords=keywords, location=location,
-                                       max_jobs=max_jobs, max_days_old=max_days_old)
+        stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old)
 
         if stats['errors'] > 0:
             return jsonify({'success': False, 'stats': stats,
                             'error': '; '.join(stats['error_messages'])}), 500
-
         return jsonify({'success': True, 'stats': stats})
 
     except ValueError as e:
