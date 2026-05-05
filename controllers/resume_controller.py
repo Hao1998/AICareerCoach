@@ -19,6 +19,7 @@ from models import db, Resume, JobMatch, JobPosting
 from job_utils import embeddings
 from services.resume_service import extract_text_from_pdf, get_resume_text, perform_qa, text_splitter
 from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain
+from services.input_guard import scan_with_llm
 from services.job_service import find_matching_jobs
 from factory import limiter
 
@@ -63,6 +64,15 @@ def upload_file():
         db.session.flush()
 
         resume_text = extract_text_from_pdf(file_path)
+
+        # LLM-as-Judge guard: catch sophisticated injections that bypass regex
+        guard = scan_with_llm(resume_text, context="resume")
+        if not guard["safe"]:
+            os.remove(file_path)
+            db.session.rollback()
+            flash('Your resume contains content that cannot be processed. Please upload a valid resume.', 'error')
+            return redirect(url_for('auth.index'))
+
         resume.text_content = resume_text  # cache so future requests skip PDF I/O
         splitted_text = text_splitter.split_text(resume_text)
 
@@ -187,7 +197,7 @@ def prepare_roadmap():
                     job_description=job.description[:1000],
                     job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
                 )
-                skill_gaps = json.loads(analysis_result).get('skill_gaps', [])
+                skill_gaps = analysis_result.skill_gaps
             except Exception:
                 skill_gaps = ["General skill development needed"]
 

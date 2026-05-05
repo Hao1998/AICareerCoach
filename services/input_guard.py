@@ -60,6 +60,38 @@ def scan_message(text: str) -> dict:
     return {"safe": True}
 
 
+def scan_with_llm(text: str, context: str = "input") -> dict:
+    """
+    SecurityGuardAgent (grok-3-mini) second layer: catches sophisticated injections
+    that slip past the regex layer.
+
+    Only call this for high-value, low-frequency operations (resume upload) —
+    NOT on every chat message, to avoid adding latency to normal interactions.
+
+    Returns:
+        {"safe": True}
+        {"safe": False, "response": "<safe reply to send back>"}
+    """
+    try:
+        from agents import get_security_guard_agent
+        result = get_security_guard_agent().check(text, context)
+
+        if not result.is_safe:
+            logger.warning(
+                "[InputGuard][LLM] Injection detected | context=%s | reason=%s | input=%.120r",
+                context, result.reason, text,
+            )
+            return {"safe": False, "response": _BLOCKED_RESPONSE}
+
+        return {"safe": True}
+
+    except Exception as exc:
+        # Guard failure is non-fatal — default to safe so a model error doesn't
+        # block every upload.
+        logger.warning("[InputGuard][LLM] SecurityGuardAgent call failed, defaulting safe: %s", exc)
+        return {"safe": True}
+
+
 def scan_resume_text(text: str, user_id=None) -> str:
     """
     Scan PDF-extracted resume text for embedded injection payloads.

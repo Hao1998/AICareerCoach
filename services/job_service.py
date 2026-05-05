@@ -7,7 +7,6 @@ HTML and JSON fetch endpoints.
 No Flask routes here — pure business logic.
 """
 
-import json
 import logging
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -60,17 +59,22 @@ def find_matching_jobs_old(resume_text, top_k=5):
         similarity_score = calculate_embedding_similarity(resume_embedding, job_embedding)
 
         try:
-            analysis_result = run_job_matching(
+            result = run_job_matching(
                 resume=resume_text[:3000],
                 job_title=job.title,
                 company=job.company,
                 job_description=job.description[:1000],
                 job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
             )
-            analysis = json.loads(analysis_result)
+            analysis = {
+                "match_score": result.match_score,
+                "matched_skills": result.matched_skills,
+                "skill_gaps": result.skill_gaps,
+                "recommendation": result.recommendation,
+            }
         except Exception:
             analysis = {
-                "match_score": similarity_score * 100,
+                "match_score": int(similarity_score * 100),
                 "matched_skills": [],
                 "skill_gaps": [],
                 "recommendation": "Analysis not available"
@@ -85,18 +89,24 @@ def find_matching_jobs_old(resume_text, top_k=5):
 def _analyze_job(resume_text: str, job: JobPosting, similarity_score: float) -> dict:
     """Run one LLM job-match analysis. Called concurrently from find_matching_jobs."""
     try:
-        analysis_result = run_job_matching(
+        result = run_job_matching(
             resume=resume_text[:3000],
             job_title=job.title,
             company=job.company,
             job_description=job.description[:1000],
             job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
         )
-        analysis = json.loads(analysis_result)
+        # result is a JobMatchResult — convert to dict to keep the downstream interface stable
+        analysis = {
+            "match_score": result.match_score,
+            "matched_skills": result.matched_skills,
+            "skill_gaps": result.skill_gaps,
+            "recommendation": result.recommendation,
+        }
     except Exception as e:
         logger.warning("LLM analysis failed for job %s: %s", job.id, e)
         analysis = {
-            "match_score": similarity_score * 100,
+            "match_score": int(similarity_score * 100),
             "matched_skills": [],
             "skill_gaps": [],
             "recommendation": "Analysis not available",
