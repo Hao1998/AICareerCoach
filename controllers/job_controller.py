@@ -10,17 +10,23 @@ import re
 
 from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app
 from flask_login import login_required, current_user
+from flask_limiter.errors import RateLimitExceeded
 
 from sqlalchemy.orm import joinedload
 
-from models import db, JobPosting, JobMatch, Resume, AgentConfig
-from job_fetcher import fetch_jobs_from_adzuna
+from models import db, JobPosting, JobMatch, Resume
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import get_resume_text
 from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring
-from services.job_service import find_matching_jobs
+from services.job_service import find_matching_jobs, fetch_and_save_jobs
+from factory import limiter
 
 job_bp = Blueprint('jobs', __name__)
+
+
+@job_bp.errorhandler(RateLimitExceeded)
+def handle_rate_limit(e):
+    return jsonify({"error": "Too many requests. Please slow down."}), 429
 
 
 def _extract_json(text: str) -> str:
@@ -50,13 +56,18 @@ def list_jobs():
                 jobs_dict = {j.id: j for j in JobPosting.query.filter(JobPosting.id.in_(id_list)).all()}
                 jobs = [jobs_dict[jid] for jid in id_list if jid in jobs_dict]
                 is_chat_filtered = True
-                return render_template('jobs.html', jobs=jobs, user=current_user,
+                return render_template('jobs.html', jobs=jobs, pagination=None, user=current_user,
                                        is_chat_filtered=is_chat_filtered)
         except (ValueError, TypeError):
             pass
 
-    jobs = JobPosting.query.filter_by(is_active=True).order_by(JobPosting.posted_date.desc()).all()
-    return render_template('jobs.html', jobs=jobs, user=current_user, is_chat_filtered=is_chat_filtered)
+    page = request.args.get('page', 1, type=int)
+    pagination = (JobPosting.query
+                  .filter_by(is_active=True)
+                  .order_by(JobPosting.posted_date.desc())
+                  .paginate(page=page, per_page=20, error_out=False))
+    return render_template('jobs.html', jobs=pagination.items, pagination=pagination,
+                           user=current_user, is_chat_filtered=is_chat_filtered)
 
 
 @job_bp.route('/jobs/fetch', methods=['GET', 'POST'])
@@ -69,27 +80,11 @@ def fetch_jobs():
             max_jobs = int(request.form.get('max_jobs', 50))
             max_days_old = int(request.form.get('max_days_old', 30))
 
-            if max_jobs < 1 or max_jobs > 200:
-                return render_template('fetch_jobs.html',
-                                       error="Please enter a number between 1 and 200 for max jobs")
-
-            config = AgentConfig.query.filter_by(user_id=current_user.id).first()
-            if not config:
-                config = AgentConfig(user_id=current_user.id)
-                db.session.add(config)
-
-            config.adzuna_location = location
-            config.adzuna_max_jobs = max_jobs
-            config.adzuna_max_days_old = max_days_old
-            db.session.commit()
-
-            stats = fetch_jobs_from_adzuna(keywords=keywords, location=location,
-                                           max_jobs=max_jobs, max_days_old=max_days_old)
+            stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old)
 
             if stats['errors'] > 0:
                 return render_template('fetch_jobs.html',
                                        error='; '.join(stats['error_messages']), stats=stats)
-
             return render_template('fetch_jobs.html', success=True, stats=stats)
 
         except ValueError as e:
@@ -110,29 +105,11 @@ def fetch_jobs_api():
         max_jobs = int(data.get('max_jobs', 50))
         max_days_old = int(data.get('max_days_old', 30))
 
-        if max_jobs < 1 or max_jobs > 200:
-            return jsonify({'success': False, 'error': 'max_jobs must be between 1 and 200'}), 400
-
-        config = AgentConfig.query.filter_by(user_id=current_user.id).first()
-        if not config:
-            config = AgentConfig(user_id=current_user.id)
-            db.session.add(config)
-
-        if location is not None:
-            config.adzuna_location = location if location.strip() else None
-        if max_jobs:
-            config.adzuna_max_jobs = max_jobs
-        if max_days_old:
-            config.adzuna_max_days_old = max_days_old
-        db.session.commit()
-
-        stats = fetch_jobs_from_adzuna(keywords=keywords, location=location,
-                                       max_jobs=max_jobs, max_days_old=max_days_old)
+        stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old)
 
         if stats['errors'] > 0:
             return jsonify({'success': False, 'stats': stats,
                             'error': '; '.join(stats['error_messages'])}), 500
-
         return jsonify({'success': True, 'stats': stats})
 
     except ValueError as e:
@@ -214,22 +191,48 @@ def delete_job(job_id):
 @job_bp.route('/api/jobs', methods=['GET'])
 @login_required
 def get_jobs_api():
-    jobs = JobPosting.query.filter_by(is_active=True).all()
-    return jsonify([job.to_dict() for job in jobs])
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+    pagination = (JobPosting.query
+                  .filter_by(is_active=True)
+                  .order_by(JobPosting.posted_date.desc())
+                  .paginate(page=page, per_page=per_page, error_out=False))
+    return jsonify({
+        "jobs": [job.to_dict() for job in pagination.items],
+        "page": pagination.page,
+        "per_page": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_prev": pagination.has_prev,
+    })
 
 
 @job_bp.route('/api/matches/<int:resume_id>')
 @login_required
 def get_matches_api(resume_id):
     Resume.query.filter_by(id=resume_id, user_id=current_user.id).first_or_404()
-    matches = JobMatch.query.options(joinedload(JobMatch.job)).filter_by(
-        resume_id=resume_id, user_id=current_user.id
-    ).order_by(JobMatch.match_score.desc()).all()
-    return jsonify([match.to_dict() for match in matches])
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+    pagination = (JobMatch.query
+                  .options(joinedload(JobMatch.job))
+                  .filter_by(resume_id=resume_id, user_id=current_user.id)
+                  .order_by(JobMatch.match_score.desc())
+                  .paginate(page=page, per_page=per_page, error_out=False))
+    return jsonify({
+        "matches": [m.to_dict() for m in pagination.items],
+        "page": pagination.page,
+        "per_page": pagination.per_page,
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "has_next": pagination.has_next,
+        "has_prev": pagination.has_prev,
+    })
 
 
 @job_bp.route('/api/jobs/<int:job_id>/match', methods=['POST'])
 @login_required
+@limiter.limit("10 per minute; 100 per day")
 def check_job_match(job_id):
     try:
         job = JobPosting.query.get(job_id)
@@ -306,6 +309,7 @@ def check_job_match(job_id):
 
 @job_bp.route('/api/jobs/<int:job_id>/tailor', methods=['POST'])
 @login_required
+@limiter.limit("10 per minute; 50 per day")
 def tailor_resume_for_job(job_id):
     """ATS-optimize the user's resume for a specific job. Caches result in JobMatch."""
     try:

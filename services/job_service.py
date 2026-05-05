@@ -1,7 +1,9 @@
 """
 Job Service
 
-Handles job matching using FAISS vector search and LLM analysis.
+Handles job matching using FAISS vector search and LLM analysis,
+and the shared Adzuna fetch + config-save logic used by both the
+HTML and JSON fetch endpoints.
 No Flask routes here — pure business logic.
 """
 
@@ -12,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
 from job_utils import embeddings, get_job_faiss_index
+from job_fetcher import fetch_jobs_from_adzuna
 
 # FAISS and HuggingFace embeddings are CPU-bound C extensions that gevent
 # cannot patch. Spawning them on gevent's thread pool hands the blocking work
@@ -184,3 +187,33 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
     except Exception as e:
         logger.error("Error in optimized job matching: %s, falling back to brute-force", e)
         return find_matching_jobs_old(resume_text, top_k)
+
+
+def fetch_and_save_jobs(user_id: int, keywords, location, max_jobs: int, max_days_old: int) -> dict:
+    """
+    Validate params, persist Adzuna preferences to AgentConfig, fetch jobs,
+    and return the stats dict from fetch_jobs_from_adzuna.
+
+    Raises ValueError for invalid params so the caller can surface the message.
+    Used by both the HTML form endpoint and the JSON API endpoint.
+    """
+    from models import AgentConfig, db
+
+    if max_jobs < 1 or max_jobs > 200:
+        raise ValueError("max_jobs must be between 1 and 200")
+
+    config = AgentConfig.query.filter_by(user_id=user_id).first()
+    if not config:
+        config = AgentConfig(user_id=user_id)
+        db.session.add(config)
+
+    if location is not None:
+        config.adzuna_location = location if str(location).strip() else None
+    config.adzuna_max_jobs = max_jobs
+    config.adzuna_max_days_old = max_days_old
+    db.session.commit()
+
+    return fetch_jobs_from_adzuna(
+        keywords=keywords, location=location,
+        max_jobs=max_jobs, max_days_old=max_days_old,
+    )
