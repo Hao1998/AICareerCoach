@@ -7,6 +7,7 @@ No Flask routes here — pure business logic.
 
 from langchain_core.prompts import PromptTemplate
 from langchain_classic.chains import LLMChain
+from schemas.output_schemas import JobMatchResult, KeywordExtractionResult, ResumeTailoringResult
 
 
 def get_llm(app=None):
@@ -195,140 +196,48 @@ def get_preparation_roadmap_chain():
     return _preparation_roadmap_chain
 
 
-# ── Job Matching Chain ─────────────────────────────────────────────────────────
+# ── Job Matching — delegates to JobAnalystAgent (grok-3) ──────────────────────
 
-_job_matching_template = """You are an AI Career Coach. Analyze how well the candidate's resume matches the job posting below.
-
-IMPORTANT: Output ONLY a valid JSON object. No prose, no markdown, no code fences, no narrative summaries — just the raw JSON object.
-
-Required output format:
-{{
-    "match_score": <integer 0-100>,
-    "matched_skills": ["skill1", "skill2"],
-    "skill_gaps": ["gap1", "gap2"],
-    "recommendation": "Brief advice for the candidate"
-}}
-
-Resume:
-{resume}
-
-Job Posting:
-Title: {job_title}
-Company: {company}
-Description: {job_description}
-Requirements: {job_requirements}
-
-Output ONLY the JSON object. Any text outside the JSON object is forbidden.
-"""
-
-_job_matching_prompt = PromptTemplate(
-    input_variables=["resume", "job_title", "company", "job_description", "job_requirements"],
-    template=_job_matching_template,
-)
-
-
-def run_job_matching(resume, job_title, company, job_description, job_requirements) -> str:
+def run_job_matching(resume, job_title, company, job_description, job_requirements) -> JobMatchResult:
     """
-    Invoke the LLM for job matching using an uncached instance.
-    Must bypass the global SemanticCache: the resume dominates the prompt embedding,
-    so different jobs hash as near-identical and would return stale results.
+    Delegates to the JobAnalystAgent (grok-3).
+    Returns a typed JobMatchResult — no json.loads() needed by callers.
     """
-    prompt_text = _job_matching_prompt.format(
+    from agents import get_job_analyst_agent
+    return get_job_analyst_agent().analyze(
         resume=resume,
         job_title=job_title,
         company=company,
         job_description=job_description,
         job_requirements=job_requirements,
     )
-    result = get_llm().invoke(prompt_text)
-    return result.content
 
 
-# ── ATS Resume Tailoring Chain ─────────────────────────────────────────────────
+# ── Resume Tailoring — delegates to ResumeTailoringAgent (grok-3) ─────────────
 
-_resume_tailoring_template = """
-Role: You are an expert ATS optimization specialist and career coach.
-
-Task: Tailor the candidate's resume specifically for the target job, optimizing for both
-Applicant Tracking Systems (ATS) keyword scanning and human recruiter review.
-Your goal is to reframe the candidate's REAL experience using the language and priorities
-of the target role — never fabricate skills or experience they don't have.
-
-Resume:
-{resume}
-
-Target Job:
-Title: {job_title}
-Company: {company}
-Description: {job_description}
-Requirements: {job_requirements}
-
-Instructions:
-1. Extract the most critical ATS keywords from the job description (technical skills, tools,
-   methodologies, certifications, domain terms).
-2. Identify which keywords are already present in the resume vs. which are missing.
-3. Rewrite the Professional Summary to position the candidate as a strong fit.
-4. Reorder and expand the Skills section to front-load keywords that match the JD.
-5. Rewrite up to 5 experience bullet points to mirror JD language, add metrics where implied,
-   and surface accomplishments most relevant to this role.
-6. Estimate ATS keyword match score before and after your suggestions (0–100).
-
-Return ONLY a valid JSON object in this exact format:
-{{
-    "keyword_analysis": {{
-        "critical_keywords": ["top keywords the ATS will scan for"],
-        "present_in_resume": ["JD keywords already in the candidate's resume"],
-        "missing_from_resume": ["important JD keywords NOT currently in the resume"]
-    }},
-    "ats_score": {{
-        "before": <integer 0-100, estimated current keyword match>,
-        "after": <integer 0-100, estimated score after applying tailoring>
-    }},
-    "tailored_sections": {{
-        "professional_summary": "Rewritten 3-4 sentence summary optimized for this role",
-        "skills": ["skill1", "skill2", "skill3 — reordered + expanded to match JD keywords"],
-        "experience_bullets": [
-            {{
-                "original": "original bullet point from resume",
-                "tailored": "rewritten bullet using JD language, stronger framing, added metrics"
-            }}
-        ]
-    }},
-    "recommendations": [
-        "Specific actionable tip #1 to improve ATS ranking further",
-        "Specific actionable tip #2"
-    ],
-    "ats_formatting_tips": "One paragraph on formatting/structure choices that help this resume pass ATS parsing."
-}}
-"""
-
-_resume_tailoring_prompt = PromptTemplate(
-    input_variables=["resume", "job_title", "company", "job_description", "job_requirements"],
-    template=_resume_tailoring_template,
-)
-
-_resume_tailoring_chain = None
-
-
-def get_resume_tailoring_chain():
-    """Get or create ATS resume tailoring chain"""
-    global _resume_tailoring_chain
-    if _resume_tailoring_chain is None:
-        _resume_tailoring_chain = LLMChain(llm=get_llm(), prompt=_resume_tailoring_prompt)
-    return _resume_tailoring_chain
-
-
-def run_resume_tailoring(resume, job_title, company, job_description, job_requirements) -> str:
+def run_resume_tailoring_structured(
+    resume, job_title, company, job_description, job_requirements
+) -> ResumeTailoringResult:
     """
-    Invoke the LLM for resume tailoring directly, bypassing the global SemanticCache.
-    The resume dominates the prompt embedding so different jobs would cause false cache hits.
+    Delegates to the ResumeTailoringAgent (grok-3).
+    Returns a typed ResumeTailoringResult — no JSON parsing needed by callers.
     """
-    prompt_text = _resume_tailoring_prompt.format(
+    from agents import get_resume_tailoring_agent
+    return get_resume_tailoring_agent().tailor(
         resume=resume,
         job_title=job_title,
         company=company,
         job_description=job_description,
         job_requirements=job_requirements,
     )
-    result = get_llm().invoke(prompt_text)
-    return result.content
+
+
+# ── Keyword Extraction — delegates to KeywordResearchAgent (grok-3-mini) ───────
+
+def run_keyword_extraction(resume_text: str, explicit_preferences: dict | None = None) -> KeywordExtractionResult:
+    """
+    Delegates to the KeywordResearchAgent (grok-3-mini).
+    Returns a typed KeywordExtractionResult with a list of job titles.
+    """
+    from agents import get_keyword_research_agent
+    return get_keyword_research_agent().extract_keywords(resume_text, explicit_preferences)

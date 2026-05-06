@@ -16,8 +16,6 @@ from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from jobs.fetcher import AdzunaJobFetcher
 from jobs.utils import get_job_faiss_index, build_job_faiss_index, cosine_similarity
-from langchain_core.prompts import PromptTemplate
-from langchain_xai import ChatXAI
 import PyPDF2
 import numpy as np
 from jobs.scout_graph import build_job_scout_graph
@@ -116,55 +114,11 @@ class JobScoutAgent:
     """
 
     def __init__(self, app):
-        """
-        Initialize the Job Scout Agent
-
-        Args:
-            app: Flask application instance
-        """
         self.app = app
-
-        # Initialize LLM for job analysis
-        xai_api_key = os.getenv("XAI_API_KEY")
-        if not xai_api_key:
-            raise RuntimeError("XAI_API_KEY environment variable is not set")
-
-        self.llm = ChatXAI(
-            xai_api_key=xai_api_key,
-            model="grok-3",
-            temperature=0.7,
-        )
-
-        # Build the LangGraph pipeline (nodes close over `self`).
-        # The checkpointer persists state after every node so a crashed run can
-        # be resumed by calling invoke() again with the same thread_id.
+        # Specialist agents (JobAnalystAgent, KeywordResearchAgent) are accessed
+        # via the coordinator inside each method — no local LLM needed here.
         checkpointer = _get_checkpointer(app)
         self.graph = build_job_scout_graph(self, _emit_progress, _mark_done, checkpointer)
-
-        # Job matching prompt template
-        self.matching_prompt = PromptTemplate(
-            input_variables=["resume", "job_title", "company", "job_description", "job_requirements"],
-            template="""You are an expert career coach analyzing if a job matches a candidate's resume.
- 
-Resume Summary:
-{resume}
- 
-Job Details:
-Title: {job_title}
-Company: {company}
-Description: {job_description}
-Requirements: {job_requirements}
- 
-Analyze the match and provide a JSON response with:
-1. match_score: 0-100 (higher is better match)
-2. matched_skills: List of candidate's skills that match job requirements
-3. skill_gaps: List of skills the candidate needs to develop
-4. recommendation: Brief personalized recommendation (2-3 sentences)
- 
-Return ONLY valid JSON in this format:
-{{"match_score": 85, "matched_skills": ["Python", "SQL"], "skill_gaps": ["AWS", "Docker"], "recommendation": "Strong match..."}}
-"""
-        )
 
     def extract_text_from_pdf(self, pdf_path):
         """Extract text from PDF resume"""
@@ -281,38 +235,15 @@ Return ONLY valid JSON in this format:
 
     def _extract_keywords_from_resume(self, resume_text, explicit_preferences=None):
         """
-        AUTONOMOUS DECISION: Extract job search keywords from resume.
-        If explicit_preferences are provided (from chat), they constrain the search.
-
-        Example with preferences:
-          User said "I want remote ML roles, no finance" →
-          keywords become "machine learning engineer, data scientist" (not finance roles)
+        Keyword Research Agent: extract job search titles from resume.
+        Uses structured output — no free-text parsing, injection stays in typed fields.
+        explicit_preferences (from chat) constrain the search when provided.
         """
         try:
-            preference_context = ""
-            if explicit_preferences:
-                preference_context = f"""
-User's stated preferences (from chat — must be respected):
-{json.dumps(explicit_preferences, indent=2)}
-When choosing job titles, favour roles that match these preferences and avoid sectors/types the user has rejected.
-"""
-
-            prompt = f"""Analyze this resume and extract 2-3 key job titles or roles the person is qualified for.
-Return only the job titles, comma-separated, no extra text.
-{preference_context}
-Resume:
-{resume_text[:1500]}
-
-Job titles:"""
-
-            response = self.llm.invoke(prompt)
-            keywords = response.content.strip()
-
-            if not keywords or len(keywords) > 100:
-                keywords = "software engineer"
-
-            return keywords
-
+            from services.llm_service import run_keyword_extraction
+            result = run_keyword_extraction(resume_text, explicit_preferences)
+            keywords = ", ".join(result.job_titles)
+            return keywords if keywords else "software engineer"
         except Exception as e:
             print(f"Error extracting keywords: {e}")
             return "software engineer"
@@ -414,86 +345,69 @@ Job titles:"""
                 if existing_match:
                     continue  # Skip duplicates
 
-                # AUTONOMOUS DECISION: Analyze job match using LLM
+                # Job Analyst Agent: structured output, no json.loads needed
                 try:
-                    preference_note = ""
+                    resume_input = resume_text[:3000]
                     if explicit_preferences:
                         pref_summary = explicit_preferences.get("summary", "")
                         if pref_summary:
-                            preference_note = f"\nUser preference note: {pref_summary}"
+                            resume_input += f"\n\nUser preference context: {pref_summary}"
 
-                    analysis_result = self.llm.invoke(
-                        self.matching_prompt.format(
-                            resume=resume_text[:3000] + preference_note,
-                            job_title=job.title,
-                            company=job.company,
-                            job_description=job.description[:1000],
-                            job_requirements=job.requirements[:1000] if job.requirements else "Not specified"
-                        )
+                    from services.llm_service import run_job_matching
+                    analysis = run_job_matching(
+                        resume=resume_input,
+                        job_title=job.title,
+                        company=job.company,
+                        job_description=job.description[:1000],
+                        job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
                     )
+                    # analysis is a JobMatchResult — typed fields, no parsing risk
 
-                    # Parse JSON response
-                    analysis = json.loads(analysis_result.content)
+                    base_match_score = analysis.match_score
 
-                    # Get base match score from LLM analysis
-                    base_match_score = analysis['match_score']
-
-                    # HYBRID SCORING: Combine resume match with user preferences
+                    # Hybrid scoring: 70% resume match + 30% preference match
                     if using_preferences and job.embedding is not None:
-                        # Calculate preference similarity (how well job matches user's learned preferences)
                         preference_similarity = cosine_similarity(user_preference_vector, job.embedding)
-                        # Convert to 0-100 scale (cosine similarity is -1 to 1)
                         preference_score = (preference_similarity + 1) * 50
-
-                        # Weighted combination: 70% resume match + 30% preference match
                         final_score = 0.7 * base_match_score + 0.3 * preference_score
-
-                        print(f"Job {job.id}: Resume match={base_match_score:.1f}, Preference match={preference_score:.1f}, Final={final_score:.1f}")
+                        print(f"Job {job.id}: Resume={base_match_score:.1f}, Pref={preference_score:.1f}, Final={final_score:.1f}")
                     else:
-                        # No preferences yet - use resume match only
                         final_score = base_match_score
 
                     matches_analyzed.append({
                         'job_id': job.id,
                         'match_score': final_score,
                         'base_score': base_match_score,
-                        'preference_adjusted': using_preferences
+                        'preference_adjusted': using_preferences,
                     })
 
-                    # AUTONOMOUS DECISION: Only save matches above threshold (using final score)
                     if final_score >= threshold:
-                        # Save match to database (with preference-adjusted score)
                         job_match = JobMatch(
                             user_id=user_id,
                             resume_id=resume_id,
                             resume_filename=resume_filename,
                             job_id=job.id,
-                            match_score=final_score,  # Use hybrid score
-                            matched_skills=json.dumps(analysis.get('matched_skills', [])),
-                            gaps=json.dumps(analysis.get('skill_gaps', [])),
-                            recommendation=analysis.get('recommendation', ''),
+                            match_score=final_score,
+                            matched_skills=json.dumps(analysis.matched_skills),
+                            gaps=json.dumps(analysis.skill_gaps),
+                            recommendation=analysis.recommendation,
                             agent_generated=True,
                             agent_run_id=run_history_id,
                             created_at=datetime.utcnow()
                         )
-
                         db.session.add(job_match)
                         matches_saved.append({
                             'job_id': job.id,
                             'job_title': job.title,
                             'company': job.company,
-                            'match_score': final_score,  # Use hybrid score
-                            'matched_skills': analysis.get('matched_skills', []),
-                            'skill_gaps': analysis.get('skill_gaps', [])
+                            'match_score': final_score,
+                            'matched_skills': analysis.matched_skills,
+                            'skill_gaps': analysis.skill_gaps,
                         })
 
-                        # Stop if we have enough good matches
                         if len(matches_saved) >= max_results:
                             break
 
-                except json.JSONDecodeError:
-                    print(f"Failed to parse LLM response for job {job.id}")
-                    continue
                 except Exception as e:
                     print(f"Error analyzing job {job.id}: {e}")
                     continue

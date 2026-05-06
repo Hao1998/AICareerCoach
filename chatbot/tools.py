@@ -201,7 +201,7 @@ def build_tools(app, user_id):
         """Tailor the user's resume to ATS-optimize it for a specific job posting. Returns keyword analysis, ATS score estimate (before/after), tailored resume sections (summary, skills, experience bullets), and formatting tips. Always call search_job_by_title first to get the job_id."""
         with app.app_context():
             from models import JobPosting
-            from services.llm_service import get_resume_tailoring_chain
+            from services.llm_service import run_resume_tailoring_structured
 
             job = JobPosting.query.get(job_id)
             if not job:
@@ -215,58 +215,39 @@ def build_tools(app, user_id):
 
             try:
                 resume_text = get_resume_text(resume)
-                result = get_resume_tailoring_chain().invoke({
-                    "resume": resume_text[:4000],
-                    "job_title": job.title,
-                    "company": job.company or "the company",
-                    "job_description": (job.description or "")[:2000],
-                    "job_requirements": (job.requirements or "")[:1500],
-                })
-                raw = result.get('text', str(result)).strip()
-                if raw.startswith('```'):
-                    raw = raw.split('```')[1]
-                    if raw.startswith('json'):
-                        raw = raw[4:]
-
-                try:
-                    tailoring = json.loads(raw)
-                except json.JSONDecodeError:
-                    tailoring = {}
-
-                is_valid = (
-                    isinstance(tailoring, dict)
-                    and "ats_score" in tailoring
-                    and "tailored_sections" in tailoring
+                # Resume Tailoring Agent — structured output, no JSON parsing needed
+                tailoring = run_resume_tailoring_structured(
+                    resume=resume_text[:4000],
+                    job_title=job.title,
+                    company=job.company or "the company",
+                    job_description=(job.description or "")[:2000],
+                    job_requirements=(job.requirements or "")[:1500],
                 )
 
                 existing_match = JobMatch.query.filter_by(
                     user_id=user_id, resume_id=resume.id, job_id=job.id
                 ).first()
                 if existing_match:
-                    existing_match.tailoring_result = json.dumps(tailoring) if is_valid else None
+                    existing_match.tailoring_result = tailoring.model_dump_json()
                     db.session.commit()
 
-                if not is_valid:
-                    return json.dumps({
-                        "success": False,
-                        "error": "Tailoring failed to produce a valid result. The ATS results page will re-run it fresh.",
-                        "action": "open_tailor_modal",
-                        "job_id": job.id,
-                        "job": {"id": job.id, "title": job.title, "company": job.company},
-                    })
-
-                ats = tailoring.get("ats_score", {})
                 return json.dumps({
                     "success": True,
                     "action": "open_tailor_modal",
                     "job_id": job.id,
                     "job": {"id": job.id, "title": job.title, "company": job.company},
-                    "ats_before": ats.get("before", "?"),
-                    "ats_after": ats.get("after", "?"),
+                    "ats_before": tailoring.ats_score.before,
+                    "ats_after": tailoring.ats_score.after,
                 })
             except Exception as e:
                 logger.error("tailor_resume_to_job error: %s", e)
-                return json.dumps({"success": False, "error": str(e)})
+                return json.dumps({
+                    "success": False,
+                    "error": "Tailoring failed. The ATS results page will re-run it fresh.",
+                    "action": "open_tailor_modal",
+                    "job_id": job_id,
+                    "job": {"id": job_id, "title": getattr(job, "title", ""), "company": getattr(job, "company", "")},
+                })
 
     @tool
     def get_user_preferences(dummy: str = "") -> str:
