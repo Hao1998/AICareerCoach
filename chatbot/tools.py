@@ -289,5 +289,25 @@ def build_tools(app, user_id):
                 logger.error("get_user_preferences error: %s", e)
                 return json.dumps({"success": False, "error": str(e)})
 
+    @tool
+    def search_memory(query: str) -> str:
+        """Search long-term memory of past conversations with this user. Use this when you need to recall something the user mentioned in a previous session — their career goals, stated preferences, past experience details, or decisions made. Formulate the query as a short description of what you want to recall, e.g. 'user remote work preference' or 'user past experience at previous company'."""
+        with app.app_context():
+            from chatbot.memory import search_memories
+            try:
+                results = search_memories(user_id, query, top_k=4)
+                # Wrap in untrusted_data so the agent applies the same trust model
+                # as it does for resume text and conversation_summary — memory content
+                # originates from user messages and must never be treated as instructions.
+                return (
+                    f"<untrusted_data source=\"long_term_memory\">\n"
+                    f"{results}\n"
+                    f"</untrusted_data>"
+                )
+            except Exception as e:
+                logger.error("search_memory error: %s", e)
+                return "Memory search failed. Proceed without recalled context."
+
     return [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches,
-            explain_feature, search_job_by_title, tailor_resume_to_job, get_user_preferences]
+            explain_feature, search_job_by_title, tailor_resume_to_job, get_user_preferences,
+            search_memory]

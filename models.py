@@ -259,6 +259,22 @@ class ChatMessage(db.Model):
         return f'<ChatMessage id={self.id} user_id={self.user_id} role={self.role}>'
 
 
+class UserMemoryChunk(db.Model):
+    """Semantic memory chunks for agentic RAG — one chunk per extracted fact or session summary."""
+    __tablename__ = 'user_memory_chunks'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    content = db.Column(db.Text, nullable=False)
+    memory_type = db.Column(db.String(50), nullable=False)  # 'session_summary' | 'fact'
+    embedding = db.Column(db.PickleType, nullable=True)
+    session_date = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship('User', backref=db.backref('memory_chunks', lazy='dynamic',
+                                                       cascade='all, delete-orphan'))
+
+
 class AgentRunHistory(db.Model):
     """Model for storing Job Scout Agent execution history"""
     __tablename__ = 'agent_run_history'
