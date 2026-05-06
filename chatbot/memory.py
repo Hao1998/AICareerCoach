@@ -11,12 +11,13 @@ Also handles explicit preference extraction from conversation text.
 
 import json
 import logging
+import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional
 
 from langsmith import traceable
 
-from models import AgentConfig, ChatMessage, db
+from models import AgentConfig, ChatMessage, UserMemoryChunk, db
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,135 @@ Merged summary:"""
                         user_id, updated_prefs.get('summary', ''))
 
         db.session.commit()
+
+        session_date = messages[-1].timestamp if messages else datetime.utcnow()
+        index_session_memories(app, user_id, messages, llm, session_date, summary=new_summary)
+
+
+@traceable(run_type="llm", name="memory-fact-extractor")
+def extract_memory_facts(messages, llm) -> list[str]:
+    """Extract 3-5 discrete, self-contained facts from a conversation for long-term memory."""
+    if not messages:
+        return []
+
+    conversation_text = "\n".join(
+        f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
+        for m in messages
+    )
+
+    prompt = f"""You are extracting memorable facts from a career coaching conversation for long-term storage.
+
+Conversation:
+{conversation_text}
+
+Extract 3-5 discrete, self-contained facts the user revealed about themselves.
+Each fact must stand alone — someone reading it with no other context should fully understand it.
+Focus on: career goals, skills mentioned, job preferences, past experience highlights, decisions made, feedback given.
+
+Return a JSON array of strings. Each string is one fact.
+If there are no notable facts, return an empty array [].
+
+Example output:
+["User has 5 years of Python backend experience.", "User prefers remote-only roles.", "User is targeting senior software engineer positions at mid-size companies."]
+
+Return ONLY the JSON array, no explanation."""
+
+    try:
+        result = llm.invoke(prompt)
+        content = result.content.strip() if hasattr(result, 'content') else str(result).strip()
+        facts = json.loads(content)
+        return facts if isinstance(facts, list) else []
+    except Exception as e:
+        logger.error("Memory fact extraction error: %s", e)
+        return []
+
+
+def index_session_memories(app, user_id: int, messages: list, llm, session_date: datetime,
+                           summary: str = None):
+    """Embed and store session summary + discrete facts as UserMemoryChunk rows."""
+    from job_utils import embeddings as hf_embeddings
+
+    if summary is None:
+        summary = summarize_session(messages, llm)
+    facts = extract_memory_facts(messages, llm)
+
+    chunks_to_index = []
+    if summary:
+        chunks_to_index.append(('session_summary', summary))
+    for fact in facts:
+        if fact and fact.strip():
+            chunks_to_index.append(('fact', fact.strip()))
+
+    if not chunks_to_index:
+        return
+
+    with app.app_context():
+        for memory_type, content in chunks_to_index:
+            try:
+                embedding = hf_embeddings.embed_query(content)
+            except Exception as e:
+                logger.error("Failed to embed memory chunk: %s", e)
+                embedding = None
+
+            chunk = UserMemoryChunk(
+                user_id=user_id,
+                content=content,
+                memory_type=memory_type,
+                embedding=embedding,
+                session_date=session_date,
+            )
+            db.session.add(chunk)
+
+        try:
+            db.session.commit()
+            logger.info("Indexed %d memory chunks for user %s", len(chunks_to_index), user_id)
+        except Exception as e:
+            db.session.rollback()
+            logger.error("Failed to commit memory chunks: %s", e)
+
+
+def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
+    """Retrieve the most semantically relevant past memories for a given query."""
+    from job_utils import embeddings as hf_embeddings
+
+    chunks = (UserMemoryChunk.query
+              .filter_by(user_id=user_id)
+              .filter(UserMemoryChunk.embedding.isnot(None))
+              .order_by(UserMemoryChunk.session_date.desc())
+              .all())
+
+    if not chunks:
+        return "No long-term memories found for this user yet."
+
+    try:
+        query_embedding = np.array(hf_embeddings.embed_query(query))
+    except Exception as e:
+        logger.error("Failed to embed memory search query: %s", e)
+        return "Memory search temporarily unavailable."
+
+    scored = []
+    for chunk in chunks:
+        try:
+            chunk_vec = np.array(chunk.embedding)
+            similarity = float(np.dot(query_embedding, chunk_vec) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(chunk_vec) + 1e-9
+            ))
+            scored.append((similarity, chunk))
+        except Exception:
+            continue
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:top_k]
+
+    if not top:
+        return "No relevant memories found."
+
+    lines = []
+    for score, chunk in top:
+        date_str = chunk.session_date.strftime("%Y-%m-%d") if chunk.session_date else "unknown date"
+        lines.append(f"[{date_str} | {chunk.memory_type}] {chunk.content}")
+
+    return "\n".join(lines)
 
 
 def get_conversation_history(user_id: int, limit: int = 10) -> list:
