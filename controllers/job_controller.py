@@ -17,7 +17,7 @@ from sqlalchemy.orm import joinedload
 from models import db, JobPosting, JobMatch, Resume
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import get_resume_text
-from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring_structured
+from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring_structured, get_preparation_roadmap_chain
 from services.job_service import find_matching_jobs, fetch_and_save_jobs
 from factory import limiter
 
@@ -265,42 +265,35 @@ def check_job_match(job_id):
             })
 
         resume_text = get_resume_text(latest_resume)
-        analysis_result = None
 
-        try:
-            analysis_result = run_job_matching(
-                resume=resume_text[:3000],
-                job_title=job.title,
-                company=job.company,
-                job_description=job.description[:1000],
-                job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
-            )
-            analysis = json.loads(_extract_json(analysis_result))
+        analysis_result = run_job_matching(
+            resume=resume_text[:3000],
+            job_title=job.title,
+            company=job.company,
+            job_description=job.description[:1000],
+            job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
+        )
+        analysis = analysis_result.model_dump() if hasattr(analysis_result, 'model_dump') else analysis_result
 
-            if existing_match:
-                existing_match.match_score = analysis.get('match_score', 0)
-                existing_match.matched_skills = json.dumps(analysis.get('matched_skills', []))
-                existing_match.gaps = json.dumps(analysis.get('skill_gaps', []))
-                existing_match.recommendation = analysis.get('recommendation', '')
-                existing_match.resume_filename = latest_resume.filename
-            else:
-                db.session.add(JobMatch(
-                    user_id=current_user.id,
-                    resume_id=latest_resume.id,
-                    resume_filename=latest_resume.filename,
-                    job_id=job.id,
-                    match_score=analysis.get('match_score', 0),
-                    matched_skills=json.dumps(analysis.get('matched_skills', [])),
-                    gaps=json.dumps(analysis.get('skill_gaps', [])),
-                    recommendation=analysis.get('recommendation', ''),
-                ))
-            db.session.commit()
-            return jsonify(analysis)
-
-        except json.JSONDecodeError as e:
-            print(f"JSON parsing failed for job {job.id}: {e}")
-            print(f"Raw LLM output was: {repr(analysis_result)}")
-            return jsonify({"error": "Failed to parse analysis results. Please try again."}), 500
+        if existing_match:
+            existing_match.match_score = analysis.get('match_score', 0)
+            existing_match.matched_skills = json.dumps(analysis.get('matched_skills', []))
+            existing_match.gaps = json.dumps(analysis.get('skill_gaps', []))
+            existing_match.recommendation = analysis.get('recommendation', '')
+            existing_match.resume_filename = latest_resume.filename
+        else:
+            db.session.add(JobMatch(
+                user_id=current_user.id,
+                resume_id=latest_resume.id,
+                resume_filename=latest_resume.filename,
+                job_id=job.id,
+                match_score=analysis.get('match_score', 0),
+                matched_skills=json.dumps(analysis.get('matched_skills', [])),
+                gaps=json.dumps(analysis.get('skill_gaps', [])),
+                recommendation=analysis.get('recommendation', ''),
+            ))
+        db.session.commit()
+        return jsonify(analysis)
 
     except Exception as e:
         print(f"Error in check_job_match: {e}")
@@ -383,4 +376,103 @@ def tailor_resume_for_job(job_id):
 
     except Exception as e:
         print(f"Error in tailor_resume_for_job: {e}")
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
+
+@job_bp.route('/api/jobs/<int:job_id>/roadmap', methods=['POST'])
+@login_required
+@limiter.limit("5 per minute; 30 per day")
+def prepare_job_roadmap(job_id):
+    """Generate a preparation roadmap for a specific job. Caches result in JobMatch."""
+    try:
+        job = JobPosting.query.get(job_id)
+        if not job or not job.is_active:
+            return jsonify({"error": "Job not found or is no longer active"}), 404
+
+        latest_resume = current_user.resumes.filter_by(is_active=True).order_by(
+            Resume.uploaded_at.desc()
+        ).first()
+        if not latest_resume:
+            return jsonify({"error": "No resume found. Please upload your resume first."}), 400
+
+        data = request.get_json(silent=True, force=True) or {}
+        timeline_months = data.get('timeline_months', 3)
+        force_refresh = data.get('refresh', False)
+
+        existing_match = JobMatch.query.filter_by(
+            user_id=current_user.id,
+            resume_id=latest_resume.id,
+            job_id=job.id
+        ).first()
+
+        if existing_match and existing_match.roadmap_result and not force_refresh:
+            cached = json.loads(existing_match.roadmap_result)
+            if cached.get('timeline_months') == timeline_months:
+                return jsonify({
+                    "cached": True,
+                    "job": {"id": job.id, "title": job.title, "company": job.company},
+                    "roadmap": cached['roadmap'],
+                    "timeline_months": timeline_months
+                })
+
+        resume_text = get_resume_text(latest_resume)
+
+        skill_gaps = []
+        if existing_match and existing_match.gaps:
+            skill_gaps = json.loads(existing_match.gaps)
+        else:
+            try:
+                analysis_result = run_job_matching(
+                    resume=resume_text[:3000],
+                    job_title=job.title,
+                    company=job.company,
+                    job_description=job.description[:1000],
+                    job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
+                )
+                skill_gaps = analysis_result.skill_gaps if hasattr(analysis_result, 'skill_gaps') else analysis_result.get('skill_gaps', [])
+            except Exception:
+                skill_gaps = ["General skill development needed"]
+
+        skill_gaps_str = ", ".join(skill_gaps) if skill_gaps else "No specific gaps identified"
+
+        roadmap_raw = get_preparation_roadmap_chain().run(
+            resume=resume_text[:3000],
+            job_title=job.title,
+            company=job.company,
+            job_description=job.description[:1500],
+            job_requirements=job.requirements[:1500] if job.requirements else "Not specified",
+            skill_gaps=skill_gaps_str,
+            timeline_months=timeline_months
+        )
+
+        roadmap = json.loads(_extract_json(roadmap_raw))
+
+        cache_payload = json.dumps({"timeline_months": timeline_months, "roadmap": roadmap})
+        if existing_match:
+            existing_match.roadmap_result = cache_payload
+        else:
+            db.session.add(JobMatch(
+                user_id=current_user.id,
+                resume_id=latest_resume.id,
+                resume_filename=latest_resume.filename,
+                job_id=job.id,
+                match_score=0,
+                matched_skills=json.dumps([]),
+                gaps=json.dumps([]),
+                roadmap_result=cache_payload,
+            ))
+        db.session.commit()
+
+        return jsonify({
+            "cached": False,
+            "job": {"id": job.id, "title": job.title, "company": job.company},
+            "roadmap": roadmap,
+            "timeline_months": timeline_months
+        })
+
+    except json.JSONDecodeError as e:
+        print(f"Error parsing roadmap JSON: {e}")
+        return jsonify({"error": "Failed to parse roadmap response. Please try again."}), 500
+    except Exception as e:
+        print(f"Error in prepare_job_roadmap: {e}")
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500

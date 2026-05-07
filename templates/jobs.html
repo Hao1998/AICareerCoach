@@ -157,6 +157,10 @@
                     class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px ml-2">
                     Tailor Resume
                 </button>
+                <button id="tabBtnRoadmap" onclick="switchTab('roadmap')"
+                    class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px ml-2">
+                    Prep Roadmap
+                </button>
             </div>
 
             <!-- Tab content (scrollable) -->
@@ -172,6 +176,23 @@
                 <div id="tabTailor" class="hidden space-y-4">
                     <div id="tailorContent"></div>
                 </div>
+
+                <!-- Prep Roadmap tab -->
+                <div id="tabRoadmap" class="hidden space-y-4">
+                    <div class="flex items-center gap-3 mb-2">
+                        <label class="text-sm font-medium text-gray-700">Timeline:</label>
+                        <select id="roadmapTimeline" class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                            <option value="1">1 month</option>
+                            <option value="3" selected>3 months</option>
+                            <option value="6">6 months</option>
+                            <option value="12">12 months</option>
+                        </select>
+                        <button onclick="loadRoadmap(_currentJobId)" class="bg-blue-600 text-white text-sm font-medium py-1.5 px-4 rounded-lg hover:bg-blue-700 transition">
+                            Generate Roadmap
+                        </button>
+                    </div>
+                    <div id="roadmapContent"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -179,6 +200,7 @@
     <script>
         let _currentJobId = null;
         let _tailorLoaded = false;
+        let _roadmapLoaded = false;
 
         // ── Page animation (wrapped so any CDN failure can't break the page) ──
         try {
@@ -218,18 +240,18 @@
 
         // ── Tab switching ─────────────────────────────────────────────────────
         function switchTab(tab) {
-            const isMatch = tab === 'match';
-            document.getElementById('tabMatch').classList.toggle('hidden', !isMatch);
-            document.getElementById('tabTailor').classList.toggle('hidden', isMatch);
+            const tabs = ['match', 'tailor', 'roadmap'];
+            tabs.forEach(t => {
+                const panel = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1));
+                const btn = document.getElementById('tabBtn' + t.charAt(0).toUpperCase() + t.slice(1));
+                const isActive = t === tab;
+                panel.classList.toggle('hidden', !isActive);
+                btn.className = 'tab-btn px-4 py-2 text-sm font-medium border-b-2 -mb-px ' +
+                    (t !== 'match' ? 'ml-2 ' : '') +
+                    (isActive ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700');
+            });
 
-            document.getElementById('tabBtnMatch').className =
-                'tab-btn px-4 py-2 text-sm font-medium border-b-2 -mb-px ' +
-                (isMatch ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 ml-2');
-            document.getElementById('tabBtnTailor').className =
-                'tab-btn px-4 py-2 text-sm font-medium border-b-2 -mb-px ml-2 ' +
-                (!isMatch ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700');
-
-            if (!isMatch && !_tailorLoaded) {
+            if (tab === 'tailor' && !_tailorLoaded) {
                 loadTailoring(_currentJobId);
             }
         }
@@ -239,6 +261,7 @@
             document.getElementById('matchModal').classList.add('hidden');
             _currentJobId = null;
             _tailorLoaded = false;
+            _roadmapLoaded = false;
         }
 
         // ── Match Analysis tab ────────────────────────────────────────────────
@@ -246,8 +269,9 @@
             _currentJobId = jobId;
             _tailorLoaded = false;
 
-            // Reset tailor tab
+            // Reset tailor and roadmap tabs
             document.getElementById('tailorContent').innerHTML = '';
+            document.getElementById('roadmapContent').innerHTML = '';
             switchTab('match');
 
             document.getElementById('modalJobTitle').textContent = jobTitle || 'Job Analysis';
@@ -407,6 +431,82 @@
                     <p class="text-gray-600 text-sm">${t.ats_formatting_tips}</p>
                 </div>` : ''}
             `;
+        }
+
+        // ── Prep Roadmap tab ──────────────────────────────────────────────────
+        function loadRoadmap(jobId, forceRefresh) {
+            const el = document.getElementById('roadmapContent');
+            const timeline = parseInt(document.getElementById('roadmapTimeline').value, 10);
+            el.innerHTML = spinner('Generating your preparation roadmap — this may take 15–30 seconds...');
+
+            const body = JSON.stringify({ timeline_months: timeline, refresh: !!forceRefresh });
+            fetch(`/api/jobs/${jobId}/roadmap`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body
+            })
+            .then(r => r.json())
+            .then(data => {
+                _roadmapLoaded = true;
+                if (data.error) { el.innerHTML = errBlock(data.error); return; }
+                el.innerHTML = renderRoadmap(data);
+            })
+            .catch(() => {
+                el.innerHTML = errBlock('Failed to generate roadmap. Please try again.');
+            });
+        }
+
+        function renderRoadmap(data) {
+            const r = data.roadmap;
+            const phases = r.phases || r.milestones || [];
+            const timeline = data.timeline_months;
+
+            let header = `
+                ${data.cached ? '<p class="text-xs text-gray-400 text-right -mt-2 mb-2">Cached result · <button class="text-blue-500 underline" onclick="loadRoadmap(_currentJobId, true)">Refresh</button></p>' : ''}
+                <div class="bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl p-5">
+                    <p class="text-sm text-gray-600 font-medium mb-1">Preparation Roadmap</p>
+                    <p class="text-2xl font-bold text-indigo-800">${timeline}-Month Plan</p>
+                    ${r.overview || r.summary ? `<p class="text-gray-600 text-sm mt-2">${r.overview || r.summary}</p>` : ''}
+                </div>
+            `;
+
+            let phaseHtml = '';
+            if (phases.length) {
+                phaseHtml = phases.map((phase, i) => {
+                    const title = phase.title || phase.name || `Phase ${i + 1}`;
+                    const duration = phase.duration || phase.timeline || '';
+                    const goals = phase.goals || phase.tasks || phase.activities || [];
+                    const resources = phase.resources || [];
+
+                    const goalList = Array.isArray(goals)
+                        ? goals.map(g => `<li class="flex gap-2 text-sm text-gray-700"><span class="text-indigo-500 mt-0.5 flex-shrink-0">&#9679;</span>${typeof g === 'string' ? g : g.description || g.task || g.goal || JSON.stringify(g)}</li>`).join('')
+                        : '';
+
+                    const resourceList = Array.isArray(resources) && resources.length
+                        ? `<div class="mt-2"><p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Resources</p><div class="flex flex-wrap gap-2">${resources.map(res => `<span class="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded-full">${typeof res === 'string' ? res : res.name || res.title || JSON.stringify(res)}</span>`).join('')}</div></div>`
+                        : '';
+
+                    return `
+                        <div class="border border-gray-200 rounded-lg p-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <p class="font-semibold text-gray-800 text-sm">${title}</p>
+                                ${duration ? `<span class="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-xs rounded-full">${duration}</span>` : ''}
+                            </div>
+                            ${goalList ? `<ul class="space-y-1">${goalList}</ul>` : ''}
+                            ${resourceList}
+                        </div>`;
+                }).join('');
+            }
+
+            const tips = r.tips || r.advice || [];
+            const tipsHtml = Array.isArray(tips) && tips.length
+                ? `<div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                       <p class="text-yellow-800 font-semibold mb-2 text-sm">Tips</p>
+                       <ul class="space-y-1">${tips.map(t => `<li class="flex gap-2 text-sm text-gray-700"><span class="text-yellow-500 mt-0.5 flex-shrink-0">&#9733;</span>${t}</li>`).join('')}</ul>
+                   </div>`
+                : '';
+
+            return header + phaseHtml + tipsHtml;
         }
 
         // ── Auto-open tailor modal from ?tailor=<id> (set by chat widget) ────

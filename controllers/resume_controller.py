@@ -73,6 +73,15 @@ def upload_file():
             flash('Your resume contains content that cannot be processed. Please upload a valid resume.', 'error')
             return redirect(url_for('auth.index'))
 
+        JobMatch.query.filter_by(user_id=current_user.id).update({
+            JobMatch.match_score: None,
+            JobMatch.matched_skills: None,
+            JobMatch.gaps: None,
+            JobMatch.recommendation: None,
+            JobMatch.tailoring_result: None,
+            JobMatch.roadmap_result: None,
+        })
+
         resume.text_content = resume_text  # cache so future requests skip PDF I/O
         splitted_text = text_splitter.split_text(resume_text)
 
