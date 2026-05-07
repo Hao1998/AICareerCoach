@@ -17,7 +17,7 @@ from sqlalchemy.orm import joinedload
 from models import db, JobPosting, JobMatch, Resume
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import get_resume_text
-from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring
+from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring_structured
 from services.job_service import find_matching_jobs, fetch_and_save_jobs
 from factory import limiter
 
@@ -349,20 +349,14 @@ def tailor_resume_for_job(job_id):
         #     "job_description": (job.description or "")[:2000],
         #     "job_requirements": (job.requirements or "")[:1500],
         # })
-        result = run_resume_tailoring(
+        result = run_resume_tailoring_structured(
             resume=resume_text[:4000],
             job_title=job.title,
             company=job.company or "the company",
             job_description=job.description[:1000],
             job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
         )
-        raw = result.strip()
-
-        try:
-            tailoring = json.loads(_extract_json(raw))
-        except json.JSONDecodeError:
-            print(f"Tailoring JSON parse failed for job {job.id}. Raw output: {repr(raw)}")
-            return jsonify({"error": "Failed to parse tailoring result. Please try again."}), 500
+        tailoring = result.model_dump() if hasattr(result, 'model_dump') else result
 
 
 

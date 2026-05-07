@@ -1,242 +1,181 @@
-# AICareerCoach
+# AI Career Coach
 
-An intelligent AI-powered career coaching platform that analyzes resumes and matches them with perfect job opportunities using advanced machine learning and natural language processing.
+A full-stack AI career coaching platform that analyzes resumes, matches candidates to jobs using semantic search, and provides personalized career guidance through an agentic chatbot — built with Flask, LangChain, LangGraph, and FAISS.
 
-## Features
+## Highlights
 
-### 1. Resume Analysis
-- Upload PDF resumes for comprehensive AI analysis
-- Extracts career objectives, skills, experience, education, and achievements
-- Uses Grok for intelligent resume evaluation
-- Provides actionable insights and recommendations
+- **Multi-agent architecture** — Coordinator delegates tasks to specialized agents (security guard, keyword research, job analyst, resume tailoring) running on different models for cost/quality optimization
+- **LangGraph state machine** — Job Scout Agent uses a graph-based workflow with conditional routing, parallel node execution, and checkpoint-based persistence
+- **RAG pipeline** — Resume Q&A powered by FAISS vector store with HuggingFace embeddings and contextual retrieval
+- **Semantic job matching** — Cosine similarity on embeddings + LLM-scored analysis produces ranked matches with skill gap identification
+- **MCP server** — Exposes tools via Model Context Protocol with per-user API key scoping (zero cross-user access by design)
+- **Prompt injection guard** — Regex + heuristic input validation layer protects both chat and PDF-extracted resume content
+- **Streaming chat** — Server-sent events for real-time AI responses with session-aware conversation memory
+- **Eval suite** — Automated evaluation harness using RAGAS for chat, job matching, memory, and resume tailoring quality
+- **Production-ready** — Gunicorn + gevent workers, Flask-Limiter rate limiting, database indexing, semantic caching, Flask-Migrate for schema versioning
 
-### 2. CV-Job Matching (NEW!)
-- **Intelligent Job Matching**: Automatically finds the best matching jobs for uploaded resumes
-- **Match Scoring**: AI-powered scoring system (0-100%) based on skills, experience, and requirements
-- **Skill Analysis**: Identifies matched skills and skill gaps for each job
-- **Personalized Recommendations**: Get AI-generated advice for improving job match scores
-- **Vector Similarity Search**: Uses FAISS embeddings for semantic matching between resumes and jobs
+## Architecture
 
-### 3. Job Management
-- Add and manage job postings
-- View detailed job descriptions and requirements
-- Track job matches across different resumes
-- Filter and search through available positions
-
-### 4. Interactive Q&A
-- Ask questions about uploaded resumes
-- Get intelligent answers using retrieval-augmented generation (RAG)
-- Semantic search through resume content
-
-## Technology Stack
-
-- **Backend**: Flask (Python)
-- **AI/ML**:
-  - Grok for analysis and recommendations
-  - LangChain for prompt management
-  - HuggingFace Embeddings for vector representations
-  - FAISS for similarity search
-- **Database**: SQLite with SQLAlchemy ORM
-- **PDF Processing**: PyPDF2, pdfplumber
-- **Frontend**: HTML, Tailwind CSS, Framer Motion
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd AICareerCoach
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Client (Tailwind CSS + Framer Motion)                          │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────────────┐
+│  Flask Blueprints (Controllers)                                  │
+│  auth · resume · jobs · agent · chat                             │
+└───────────────┬──────────────────────────────┬──────────────────┘
+                │                              │
+┌───────────────▼───────────┐  ┌───────────────▼──────────────────┐
+│  Services Layer            │  │  Agent System                     │
+│  llm · resume · job        │  │  coordinator → specialist agents  │
+│  input_guard · streaming   │  │  (LangGraph state machine)        │
+│  semantic_cache             │  │                                   │
+└───────────────┬───────────┘  └───────────────┬──────────────────┘
+                │                              │
+┌───────────────▼──────────────────────────────▼──────────────────┐
+│  Data Layer                                                      │
+│  SQLAlchemy ORM · FAISS vector indices · LangGraph checkpoints   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-2. Install dependencies:
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Backend | Flask, Gunicorn, gevent |
+| AI/LLM | LangChain, LangGraph, xAI Grok-3 / Grok-3-mini |
+| Embeddings | HuggingFace sentence-transformers, FAISS |
+| Database | SQLAlchemy, Flask-Migrate (Alembic), SQLite / PostgreSQL |
+| Security | Flask-Login, Flask-Limiter, input guard (prompt injection detection) |
+| Observability | LangSmith tracing, structured logging |
+| Evaluation | RAGAS, custom eval harness |
+| External APIs | Adzuna (job listings), MCP (tool exposure) |
+| Frontend | Jinja2, Tailwind CSS, Framer Motion, SSE streaming |
+
+## Key Features
+
+### Multi-Agent Job Scout
+An autonomous agent that runs on a configurable schedule (APScheduler), searching for jobs matching your resume profile. Built as a LangGraph state machine with:
+- Keyword research agent (Grok-3-mini) — extracts search terms from resume
+- Job analyst agent (Grok-3) — scores and ranks results
+- Resume tailoring agent (Grok-3) — suggests resume modifications per job
+- Security guard agent (Grok-3-mini) — validates all inputs before processing
+
+### Semantic Resume Matching
+1. PDF text extraction (PyPDF2 + pdfplumber)
+2. Chunk and embed with HuggingFace sentence-transformers
+3. Store in FAISS index for O(log n) similarity search
+4. LLM-scored match analysis with skill gap identification
+5. Personalized recommendations for each job match
+
+### Conversational Career Coach
+- Tool-calling agent with access to resume data, job matches, and skill gaps
+- Session-aware memory with automatic summarization at session boundaries
+- Intent detection for routing (job search, resume feedback, general advice)
+- Streaming responses via Server-Sent Events
+
+### MCP Server Integration
+Exposes career coaching capabilities as MCP tools for use in Claude Code or other MCP clients:
+- `analyze_resume` — full resume analysis
+- `find_matching_jobs` — semantic job search
+- `get_skill_gaps` — targeted gap analysis
+- `trigger_job_scout` — on-demand agent run
+
+### Security & Reliability
+- Input validation guard against prompt injection (chat + PDF vectors)
+- Per-user API key scoping on MCP server (cross-user access architecturally impossible)
+- Rate limiting on all endpoints
+- Database indexes for query performance
+- Semantic caching to reduce redundant LLM calls
+
+## Getting Started
+
+### Prerequisites
+- Python 3.10+
+- xAI API key ([platform.x.ai](https://platform.x.ai))
+- Adzuna API credentials ([developer.adzuna.com](https://developer.adzuna.com)) — optional, for live job fetching
+
+### Installation
+
 ```bash
+git clone https://github.com/Hao1998/AiCareerCoach.git
+cd AiCareerCoach
+
+python -m venv venv
+source venv/bin/activate
+
 pip install -r requirements.txt
+
+cp .env.example .env
+# Edit .env with your API keys
 ```
 
-3. Set up your Grok API key:
-   - Edit `app.py` and replace the API key on line 57
-   - Or set it as an environment variable:
+### Run
+
 ```bash
-export XAI_API_KEY='your-api-key-here'
+# Development
+python app.py  # → http://localhost:5001
+
+# Production
+gunicorn wsgi:app -c gunicorn.conf.py
+
+# MCP Server
+python mcp_server.py  # → http://localhost:8001
 ```
 
-4. Run the application:
+### Database Migrations
+
 ```bash
-python app.py
+flask --app wsgi db migrate -m "describe change"
+flask --app wsgi db upgrade
 ```
-
-5. (Optional) Add sample job data:
-```bash
-python add_sample_jobs.py
-```
-
-6. Open your browser and navigate to:
-```
-http://localhost:5000
-```
-
-## How the CV-Job Matching Works
-
-### 1. Resume Upload
-When you upload a resume:
-- Text is extracted from the PDF
-- Content is split into chunks for efficient processing
-- Embeddings are generated using HuggingFace models
-- Resume is analyzed by Grok for comprehensive evaluation
-
-### 2. Job Matching Algorithm
-The matching process involves:
-
-**Step 1: Vector Similarity**
-- Both resume and job descriptions are converted to embeddings
-- Cosine similarity is calculated between vectors
-- Higher similarity indicates better semantic match
-
-**Step 2: AI Analysis**
-- Grok analyzes the resume against each job posting
-- Identifies specific matching skills
-- Highlights skill gaps and areas for improvement
-- Generates a detailed match score (0-100%)
-- Provides personalized recommendations
-
-**Step 3: Results Ranking**
-- Jobs are ranked by match score
-- Top 5 matches are displayed by default
-- Each match includes:
-  - Match percentage
-  - Matched skills (green badges)
-  - Skill gaps (red badges)
-  - AI recommendation
-
-### 3. Match Storage
-- All matches are stored in the database
-- Historical match data can be retrieved via API
-- Track improvements over time
-
-## API Endpoints
-
-### Resume Operations
-- `GET /` - Home page with resume upload
-- `POST /upload` - Upload and analyze resume
-- `GET /ask` - Q&A interface
-- `POST /ask` - Submit question about resume
-
-### Job Management
-- `GET /jobs` - List all active jobs
-- `GET /jobs/add` - Add job form
-- `POST /jobs/add` - Create new job posting
-- `GET /jobs/<id>` - View job details
-- `POST /jobs/<id>/delete` - Deactivate job
-
-### API Routes
-- `GET /api/jobs` - Get all jobs as JSON
-- `GET /api/matches/<filename>` - Get matches for a specific resume
-
-## Database Schema
-
-### JobPosting
-- `id`: Primary key
-- `title`: Job title
-- `company`: Company name
-- `location`: Job location
-- `job_type`: Full-time, Part-time, Contract, etc.
-- `description`: Detailed job description
-- `requirements`: Job requirements and qualifications
-- `salary_range`: Salary information
-- `posted_date`: Date posted
-- `is_active`: Active status
-
-### JobMatch
-- `id`: Primary key
-- `resume_filename`: Name of uploaded resume
-- `job_id`: Foreign key to JobPosting
-- `match_score`: AI-generated match percentage
-- `matched_skills`: JSON array of matching skills
-- `gaps`: JSON array of skill gaps
-- `recommendation`: AI-generated advice
-- `created_at`: Match timestamp
-
-## Usage Examples
-
-### Example 1: Upload Resume and Find Jobs
-1. Go to home page
-2. Upload your resume PDF
-3. View analysis results
-4. Scroll down to see top matching jobs
-5. Click "View Full Details" to see complete job description
-
-### Example 2: Add a Job Posting
-1. Click "Add Job" from home page or jobs list
-2. Fill in job details:
-   - Title, Company, Location
-   - Job Type and Salary Range
-   - Description and Requirements
-3. Submit the form
-4. Job is now available for matching
-
-### Example 3: Use Q&A Feature
-1. Upload a resume
-2. Click "Ask a Question"
-3. Type your question (e.g., "What are my strongest skills?")
-4. Get AI-powered answer based on resume content
 
 ## Project Structure
 
 ```
-AICareerCoach/
-├── app.py                 # Main Flask application
-├── models.py              # Database models
-├── requirements.txt       # Python dependencies
-├── add_sample_jobs.py     # Sample data script
-├── templates/            # HTML templates
-│   ├── index.html        # Home page
-│   ├── results.html      # Resume analysis + job matches
-│   ├── jobs.html         # Job listings
-│   ├── add_job.html      # Add job form
-│   ├── view_job.html     # Job details
-│   ├── ask.html          # Q&A interface
-│   └── qa_results.html   # Q&A results
-├── uploads/              # Uploaded resumes
-├── vector_index/         # FAISS index for resume embeddings
-├── job_vector_index/     # FAISS index for job embeddings
-└── career_coach.db       # SQLite database
+├── factory.py              # App factory (create_app)
+├── config.py               # Environment configs
+├── models.py               # SQLAlchemy models
+├── controllers/            # Flask blueprints (route handlers)
+│   ├── auth_controller.py
+│   ├── resume_controller.py
+│   ├── job_controller.py
+│   ├── agent_controller.py
+│   └── chat_controller.py
+├── services/               # Business logic layer
+│   ├── llm_service.py
+│   ├── resume_service.py
+│   ├── job_service.py
+│   ├── input_guard.py
+│   ├── streaming.py
+│   └── semantic_cache.py
+├── agents/                 # Multi-agent system
+│   ├── coordinator.py      # Model routing & agent lifecycle
+│   ├── security_guard_agent.py
+│   ├── keyword_research_agent.py
+│   ├── job_analyst_agent.py
+│   └── resume_tailoring_agent.py
+├── chatbot/                # Conversational agent
+│   ├── agent.py            # AgentExecutor + intent detection
+│   ├── memory.py           # Session-aware conversation memory
+│   └── tools.py            # Tool definitions
+├── mcp_server.py           # MCP tool server
+├── evals/                  # Evaluation suite (RAGAS)
+├── migrations/             # Alembic version scripts
+└── templates/              # Jinja2 frontend
 ```
 
-## Key Features Explained
+## Evaluation
 
-### Embedding-Based Matching
-The system uses semantic embeddings to understand the meaning behind resume content and job requirements, not just keyword matching. This results in:
-- More accurate matches based on context
-- Better understanding of transferable skills
-- Identification of relevant experience even with different terminology
+The project includes an automated eval suite for measuring AI quality:
 
-### AI-Powered Recommendations
-Each match includes personalized advice such as:
-- Which skills to highlight in your application
-- Areas where you should gain more experience
-- How to position yourself for the role
-- Suggestions for professional development
+```bash
+python evals/run_all.py
+```
 
-### Real-Time Analysis
-All processing happens in real-time:
-- Resume upload and analysis: ~5-10 seconds
-- Job matching: ~2-3 seconds per job
-- Results displayed immediately
+Evaluates: chat response quality, job match accuracy, memory retrieval, and resume tailoring fidelity using RAGAS metrics.
 
-## Future Enhancements
+## License
 
-Potential improvements:
-- User authentication and profile management
-- Resume optimization suggestions
-- Cover letter generation
-- Interview preparation tips
-- Job application tracking
-- Email notifications for new matching jobs
-- Batch upload for multiple resumes
-- Export matches to PDF/Excel
-- Integration with job boards (LinkedIn, Indeed, etc.)
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues and pull requests.
-
+MIT
