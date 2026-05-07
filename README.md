@@ -1,6 +1,48 @@
 # AI Career Coach
 
-A full-stack AI career coaching platform that analyzes resumes, matches candidates to jobs using semantic search, and provides personalized career guidance through an agentic chatbot — built with Flask, LangChain, LangGraph, and FAISS.
+> A production-grade agentic AI system that autonomously scouts jobs, matches candidates using semantic search, and coaches users through a multi-tool conversational agent — not a wrapper around an API call.
+
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![LangGraph](https://img.shields.io/badge/LangGraph-Stateful_Agents-purple) ![LangChain](https://img.shields.io/badge/LangChain-RAG_Pipeline-green) ![MCP](https://img.shields.io/badge/MCP-Tool_Server-orange)
+
+<p align="center">
+  <img src="docs/job-matching.png" width="700" alt="AI-powered job matching with skill gap analysis and match scoring" />
+</p>
+<p align="center"><em>Semantic job matching — AI scores each role, identifies skill gaps, and gives personalized recommendations</em></p>
+
+<p align="center">
+  <img src="docs/resume-tailoring.png" width="700" alt="AI-tailored resume rewriting per job posting" />
+</p>
+<p align="center"><em>Resume tailoring — AI rewrites your CV to match specific job requirements, highlighting relevant experience</em></p>
+
+<p align="center">
+  <img src="docs/prep-roadmap.png" width="700" alt="AI-generated interview preparation roadmap with phased learning plan" />
+</p>
+<p align="center"><em>Prep roadmap — generates a phased study plan with curated resources tailored to the specific role and your skill gaps</em></p>
+
+<p align="center">
+  <img src="docs/chat-ui.png" width="700" alt="Conversational career coach with tool-calling agent" />
+</p>
+<p align="center"><em>Agentic chatbot — uses tools to search jobs, analyze resumes, and surface matches mid-conversation</em></p>
+
+<p align="center">
+  <img src="docs/agent-dashboard.png" width="700" alt="Autonomous Job Scout Agent dashboard with scheduling and run history" />
+</p>
+<p align="center"><em>Job Scout Agent — runs autonomously on a schedule, configurable threshold, full run history</em></p>
+
+## What This Demonstrates
+
+This is a solo-built, end-to-end AI application — not a tutorial follow-along. It showcases:
+
+| Skill | Implementation |
+|-------|---------------|
+| **Multi-agent orchestration** | Coordinator routes tasks to 4 specialist agents with model-specific cost/quality tradeoffs (Grok-3 vs Grok-3-mini) |
+| **LangGraph state machines** | Job Scout runs as a graph with conditional edges, parallel execution, and checkpoint persistence |
+| **RAG with evaluation** | FAISS vector store + contextual retrieval, measured by RAGAS eval suite |
+| **Production engineering** | Rate limiting, semantic caching, DB indexing, prompt injection guards, streaming SSE |
+| **Tool-use agents** | Chatbot with tool-calling (resume lookup, job search, skill gaps) + session-aware memory |
+| **MCP integration** | Exposes capabilities as MCP tools with per-user auth scoping |
+
+---
 
 ## Highlights
 
