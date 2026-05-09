@@ -109,11 +109,27 @@
         color: white;
     }
     .chat-tool-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
         margin-top: 6px;
         font-size: 12px;
         color: #6b7280;
         font-style: italic;
         opacity: 0.85;
+    }
+    .chat-tool-spinner {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border: 2px solid #d1d5db;
+        border-top-color: #6b7280;
+        border-radius: 50%;
+        animation: chat-spin 0.7s linear infinite;
+        flex-shrink: 0;
+    }
+    @keyframes chat-spin {
+        to { transform: rotate(360deg); }
     }
     #chat-typing {
         display: none;
@@ -414,29 +430,17 @@
                         replyText += evt.content;
                         replyDiv.innerHTML = formatContent(replyText);
                         scrollToBottom();
-                    } else if (evt.type === 'tool_start') {
+                    } else if (evt.type === 'tool_start' || evt.type === 'progress') {
                         ensureReplyDiv();
-                        // Lightweight inline indicator while a tool runs.
-                        const label = ({
-                            find_top_jobs:        'Searching jobs…',
-                            get_resume_info:      'Reading your resume…',
-                            tailor_resume_to_job: 'Tailoring your resume…',
-                            get_recent_matches:   'Fetching recent matches…',
-                            search_job_by_title:  'Looking up job…',
-                            trigger_job_scout_agent: 'Running job scout agent…',
-                            get_user_preferences: 'Checking your preferences…',
-                            explain_feature:      'Looking up help…',
-                        })[evt.tool] || ('Running ' + evt.tool + '…');
-                        // If we already have streamed text, append a tool note on a new line.
+                        const label = evt.label || (evt.tool ? 'Running ' + evt.tool + '…' : 'Working…');
+                        const statusHtml = '<div class="chat-tool-status"><span class="chat-tool-spinner"></span>' + label + '</div>';
                         if (replyText) {
-                            replyDiv.innerHTML = formatContent(replyText) +
-                                '<div class="chat-tool-status">' + label + '</div>';
+                            replyDiv.innerHTML = formatContent(replyText) + statusHtml;
                         } else {
-                            replyDiv.innerHTML = '<div class="chat-tool-status">' + label + '</div>';
+                            replyDiv.innerHTML = statusHtml;
                         }
                         scrollToBottom();
                     } else if (evt.type === 'tool_end') {
-                        // Strip the tool status indicator if no tokens have arrived yet.
                         if (replyDiv && !replyText) {
                             replyDiv.innerHTML = '';
                         }

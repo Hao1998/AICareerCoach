@@ -10,9 +10,10 @@ Why a queue (not async)?
     us token-by-token streaming on Flask without rewriting to async.
 
 Event types pushed onto the queue:
-    {"type": "token",      "content": "..."}        per token from the LLM
-    {"type": "tool_start", "tool":    "find_top_jobs"}
-    {"type": "tool_end",   "tool":    "find_top_jobs"}
+    {"type": "token",      "content": "..."}                     per token from the LLM
+    {"type": "tool_start", "tool": "find_top_jobs", "label": "Searching jobs…"}
+    {"type": "progress",   "label": "Ranking matches…"}          mid-tool sub-step
+    {"type": "tool_end",   "tool": "find_top_jobs"}
     {"type": "done",       "intent":  "...", "action_data": {...}}
     {"type": "error",      "error":   "..."}
     None                                              sentinel — stop streaming
@@ -52,6 +53,21 @@ def release_stream_slot(user_id: int) -> None:
         _active_streams.discard(user_id)
 
 
+# ── Tool label map ────────────────────────────────────────────────────────────
+
+_TOOL_LABELS: dict[str, str] = {
+    "find_top_jobs":           "Searching jobs…",
+    "get_resume_info":         "Reading your resume…",
+    "tailor_resume_to_job":    "Tailoring your resume…",
+    "get_recent_matches":      "Fetching recent matches…",
+    "search_job_by_title":     "Looking up job…",
+    "trigger_job_scout_agent": "Running job scout agent…",
+    "get_user_preferences":    "Checking your preferences…",
+    "explain_feature":         "Looking up help…",
+    "search_memory":           "Searching memory…",
+}
+
+
 # ── Callback handler ──────────────────────────────────────────────────────────
 
 class TokenStreamHandler(BaseCallbackHandler):
@@ -65,7 +81,8 @@ class TokenStreamHandler(BaseCallbackHandler):
     def __init__(self, q: queue.Queue):
         super().__init__()
         self.q = q
-        self._captured_text: list[str] = []   # full assistant response, for DB save
+        self._captured_text: list[str] = []
+        self._current_tool: str | None = None
 
     # Token-level streaming from the LLM.
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
@@ -73,15 +90,19 @@ class TokenStreamHandler(BaseCallbackHandler):
             self._captured_text.append(token)
             self.q.put({"type": "token", "content": token})
 
-    # Tool boundaries — lets the UI show "Searching jobs…" etc.
+    def push_progress(self, label: str) -> None:
+        """Called by tools mid-execution to report sub-step progress."""
+        self.q.put({"type": "progress", "label": label})
+
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
-        self.q.put({
-            "type": "tool_start",
-            "tool": (serialized or {}).get("name", "tool"),
-        })
+        name = (serialized or {}).get("name", "tool")
+        self._current_tool = name
+        label = _TOOL_LABELS.get(name, f"Running {name}…")
+        self.q.put({"type": "tool_start", "tool": name, "label": label})
 
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:
-        self.q.put({"type": "tool_end"})
+        self.q.put({"type": "tool_end", "tool": self._current_tool or ""})
+        self._current_tool = None
 
     # If the LLM call errors, surface it cleanly to the client.
     def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:

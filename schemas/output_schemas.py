@@ -1,0 +1,106 @@
+"""
+Output schemas for all LLM structured outputs across every agent.
+
+Two benefits:
+  1. Type-safe exchange — no manual json.loads() or KeyError crashes.
+  2. Injection firewall between agents — injected text is trapped inside
+     typed string fields and cannot propagate as executable instructions
+     to downstream agents. A malicious string in recommendation: str is
+     data, never a command.
+"""
+
+from pydantic import BaseModel, Field
+
+
+# ── Job Analyst Agent ──────────────────────────────────────────────────────────
+
+class JobMatchResult(BaseModel):
+    """Structured output from the Job Analyst Agent."""
+    match_score: int = Field(ge=0, le=100)
+    matched_skills: list[str] = Field(default_factory=list)
+    skill_gaps: list[str] = Field(default_factory=list)
+    recommendation: str = Field(default="")
+
+
+# ── Keyword Research Agent ─────────────────────────────────────────────────────
+
+class KeywordExtractionResult(BaseModel):
+    """Structured output from the Keyword Research Agent."""
+    job_titles: list[str] = Field(
+        description="2-3 job titles the candidate is most qualified for"
+    )
+
+
+# ── Resume Tailoring Agent ─────────────────────────────────────────────────────
+
+class ATSScore(BaseModel):
+    before: int = Field(ge=0, le=100)
+    after: int = Field(ge=0, le=100)
+
+
+class ExperienceBullet(BaseModel):
+    original: str = Field(default="")
+    tailored: str = Field(default="")
+
+
+class KeywordAnalysis(BaseModel):
+    critical_keywords: list[str] = Field(default_factory=list)
+    present_in_resume: list[str] = Field(default_factory=list)
+    missing_from_resume: list[str] = Field(default_factory=list)
+
+
+class TailoredSections(BaseModel):
+    professional_summary: str = Field(default="")
+    skills: list[str] = Field(default_factory=list)
+    experience_bullets: list[ExperienceBullet] = Field(default_factory=list)
+
+
+class ResumeTailoringResult(BaseModel):
+    """Structured output from the Resume Tailoring Agent."""
+    keyword_analysis: KeywordAnalysis
+    ats_score: ATSScore
+    tailored_sections: TailoredSections
+    recommendations: list[str] = Field(default_factory=list)
+    ats_formatting_tips: str = Field(default="")
+
+
+# ── Task Planner ──────────────────────────────────────────────────────────────
+
+class PlannedStep(BaseModel):
+    """A single step in a generated plan."""
+    step_order: int = Field(ge=1)
+    description: str = Field(description="What this step accomplishes")
+    tool_name: str | None = Field(
+        default=None,
+        description="Tool to call: find_top_jobs, get_resume_info, get_recent_matches, "
+                    "trigger_job_scout_agent, tailor_resume_to_job, search_job_by_title, "
+                    "search_memory, or null for LLM-only reasoning steps"
+    )
+    tool_input: str | None = Field(
+        default=None,
+        description="The input argument to pass to the tool (a single string or JSON)"
+    )
+
+
+class PlanResult(BaseModel):
+    """Structured output from the planner: a list of steps to achieve a goal."""
+    reasoning: str = Field(description="Brief explanation of why this plan was chosen")
+    steps: list[PlannedStep] = Field(description="Ordered steps to achieve the goal")
+
+
+class ReplanResult(BaseModel):
+    """Structured output from the replanner: updated remaining steps."""
+    reasoning: str = Field(description="Why the plan was adjusted")
+    updated_steps: list[PlannedStep] = Field(description="The new remaining steps (renumbered from 1)")
+    is_complete: bool = Field(
+        default=False,
+        description="True if the goal is fully achieved and no more steps are needed"
+    )
+
+
+# ── Security Guard ─────────────────────────────────────────────────────────────
+
+class GuardCheckResult(BaseModel):
+    """Output from the LLM-as-Judge security guard."""
+    is_safe: bool
+    reason: str = Field(default="")

@@ -86,31 +86,32 @@ def find_matching_jobs_old(resume_text, top_k=5):
     return matches[:top_k]
 
 
-def _analyze_job(resume_text: str, job: JobPosting, similarity_score: float) -> dict:
+def _analyze_job(app, resume_text: str, job: JobPosting, similarity_score: float) -> dict:
     """Run one LLM job-match analysis. Called concurrently from find_matching_jobs."""
-    try:
-        result = run_job_matching(
-            resume=resume_text[:3000],
-            job_title=job.title,
-            company=job.company,
-            job_description=job.description[:1000],
-            job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
-        )
-        # result is a JobMatchResult — convert to dict to keep the downstream interface stable
-        analysis = {
-            "match_score": result.match_score,
-            "matched_skills": result.matched_skills,
-            "skill_gaps": result.skill_gaps,
-            "recommendation": result.recommendation,
-        }
-    except Exception as e:
-        logger.warning("LLM analysis failed for job %s: %s", job.id, e)
-        analysis = {
-            "match_score": int(similarity_score * 100),
-            "matched_skills": [],
-            "skill_gaps": [],
-            "recommendation": "Analysis not available",
-        }
+    with app.app_context():
+        try:
+            result = run_job_matching(
+                resume=resume_text[:3000],
+                job_title=job.title,
+                company=job.company,
+                job_description=job.description[:1000],
+                job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
+            )
+            # result is a JobMatchResult — convert to dict to keep the downstream interface stable
+            analysis = {
+                "match_score": result.match_score,
+                "matched_skills": result.matched_skills,
+                "skill_gaps": result.skill_gaps,
+                "recommendation": result.recommendation,
+            }
+        except Exception as e:
+            logger.warning("LLM analysis failed for job %s: %s", job.id, e)
+            analysis = {
+                "match_score": int(similarity_score * 100),
+                "matched_skills": [],
+                "skill_gaps": [],
+                "recommendation": "Analysis not available",
+            }
     return {"job": job, "similarity_score": similarity_score, "analysis": analysis}
 
 
@@ -169,9 +170,11 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         # out of order, so the caller always gets the best-ranked jobs first.
         ordered_results = [None] * len(active_candidates)
 
+        from flask import current_app
+        app = current_app._get_current_object()
         with ThreadPoolExecutor(max_workers=_LLM_CONCURRENCY) as pool:
             future_to_idx = {
-                pool.submit(_analyze_job, resume_text, job, score): idx
+                pool.submit(_analyze_job, app, resume_text, job, score): idx
                 for idx, (job, score) in enumerate(active_candidates)
             }
             for future in as_completed(future_to_idx):

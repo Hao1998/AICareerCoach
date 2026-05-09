@@ -19,8 +19,14 @@ from services.resume_service import get_resume_text, perform_qa
 logger = logging.getLogger(__name__)
 
 
-def build_tools(app, user_id):
-    """Return the list of LangChain tools bound to app + user_id."""
+def build_tools(app, user_id, progress_cb=None):
+    """Return the list of LangChain tools bound to app + user_id.
+
+    progress_cb: optional callable(label: str) pushed mid-tool to update the UI.
+    """
+    def _progress(label: str):
+        if progress_cb:
+            progress_cb(label)
 
     @tool
     def find_top_jobs(query: str) -> str:
@@ -35,8 +41,11 @@ def build_tools(app, user_id):
                 return json.dumps({"success": False, "error": "No resume found. Please upload a resume first."})
 
             try:
+                _progress("Reading your resume…")
                 resume_text = get_resume_text(resume)
+                _progress("Searching job database…")
                 candidates = find_matching_jobs(resume_text, top_k=20, candidate_k=40)
+                _progress("Ranking matches…")
 
                 config = AgentConfig.query.filter_by(user_id=user_id).first()
                 preference_vector = config.preference_embedding if config else None
@@ -86,6 +95,7 @@ def build_tools(app, user_id):
         with app.app_context():
             from flask import current_app
             try:
+                _progress("Fetching jobs from Adzuna…")
                 result = current_app.extensions['scheduler'].trigger_manual_run(user_id)
                 return json.dumps({
                     "success": result['status'] == 'success',
@@ -214,7 +224,9 @@ def build_tools(app, user_id):
                 return json.dumps({"success": False, "error": "No resume found. Please upload a resume first."})
 
             try:
+                _progress("Reading your resume…")
                 resume_text = get_resume_text(resume)
+                _progress("Analyzing job requirements…")
                 # Resume Tailoring Agent — structured output, no JSON parsing needed
                 tailoring = run_resume_tailoring_structured(
                     resume=resume_text[:4000],
@@ -223,6 +235,7 @@ def build_tools(app, user_id):
                     job_description=(job.description or "")[:2000],
                     job_requirements=(job.requirements or "")[:1500],
                 )
+                _progress("Rewriting resume sections…")
 
                 existing_match = JobMatch.query.filter_by(
                     user_id=user_id, resume_id=resume.id, job_id=job.id
@@ -308,6 +321,77 @@ def build_tools(app, user_id):
                 logger.error("search_memory error: %s", e)
                 return "Memory search failed. Proceed without recalled context."
 
+    @tool
+    def create_career_plan(goal: str) -> str:
+        """Create a multi-step career plan for a complex goal. Use this when the user asks for help with a big career objective that requires multiple actions — like transitioning to a new role, preparing for interviews at a specific company, or building a career roadmap. Do NOT use this for simple questions or single-step tasks. The goal parameter should be a clear description of what the user wants to achieve."""
+        with app.app_context():
+            from chatbot.planner import run_plan, get_active_plan
+
+            existing = get_active_plan(user_id)
+            if existing:
+                from chatbot.planner import format_plan_status
+                return json.dumps({
+                    "success": False,
+                    "error": "You already have an active plan. Complete or abandon it first.",
+                    "current_plan": format_plan_status(existing),
+                })
+
+            try:
+                _progress("Planning your career strategy...")
+                result = run_plan(app, user_id, goal, progress_cb=_progress)
+                return json.dumps({"success": True, **result})
+            except Exception as e:
+                logger.error("create_career_plan error: %s", e)
+                return json.dumps({"success": False, "error": str(e)})
+
+    @tool
+    def get_career_plan_status(dummy: str = "") -> str:
+        """Check the status of the user's current career plan. Use this when the user asks about their plan progress, what steps have been completed, or what's next."""
+        with app.app_context():
+            from chatbot.planner import get_active_plan, format_plan_status
+            from models import TaskPlan
+
+            plan = get_active_plan(user_id)
+            if not plan:
+                last_plan = (TaskPlan.query
+                             .filter_by(user_id=user_id)
+                             .order_by(TaskPlan.created_at.desc())
+                             .first())
+                if last_plan:
+                    return json.dumps({
+                        "success": True,
+                        "has_plan": False,
+                        "message": f"Your last plan ('{last_plan.goal}') was {last_plan.status}. You can create a new one.",
+                    })
+                return json.dumps({
+                    "success": True,
+                    "has_plan": False,
+                    "message": "No career plan found. Ask me to create one with a specific goal!",
+                })
+
+            return json.dumps({
+                "success": True,
+                "has_plan": True,
+                "plan": format_plan_status(plan),
+            })
+
+    @tool
+    def abandon_career_plan(reason: str = "") -> str:
+        """Abandon the user's current active career plan. Use this when the user wants to cancel, restart, or change their career plan."""
+        with app.app_context():
+            from chatbot.planner import get_active_plan
+
+            plan = get_active_plan(user_id)
+            if not plan:
+                return json.dumps({"success": False, "error": "No active plan to abandon."})
+
+            plan.status = 'abandoned'
+            db.session.commit()
+            return json.dumps({
+                "success": True,
+                "message": f"Plan '{plan.goal}' has been abandoned. You can create a new one anytime.",
+            })
+
     return [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches,
             explain_feature, search_job_by_title, tailor_resume_to_job, get_user_preferences,
-            search_memory]
+            search_memory, create_career_plan, get_career_plan_status, abandon_career_plan]
