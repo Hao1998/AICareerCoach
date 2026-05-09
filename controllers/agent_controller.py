@@ -15,6 +15,7 @@ from flask_login import login_required, current_user
 from sqlalchemy.orm import joinedload
 
 from models import db, AgentConfig, AgentRunHistory, JobMatch
+from services.db_lock import safe_commit
 from job_utils import update_user_preferences
 
 agent_bp = Blueprint('agent', __name__)
@@ -83,7 +84,7 @@ def agent_config():
     if not config:
         config = AgentConfig(user_id=current_user.id)
         db.session.add(config)
-        db.session.commit()
+        safe_commit()
 
     if request.method == 'POST':
         try:
@@ -130,7 +131,7 @@ def agent_config():
                 except (ValueError, TypeError):
                     pass
 
-            db.session.commit()
+            safe_commit()
 
             if schedule_changed or enabled_changed:
                 _get_scheduler().rebuild_schedule()
@@ -171,7 +172,7 @@ def agent_dashboard():
     if not config:
         config = AgentConfig(user_id=current_user.id)
         db.session.add(config)
-        db.session.commit()
+        safe_commit()
 
     recent_runs = AgentRunHistory.query.filter_by(
         user_id=current_user.id
@@ -210,7 +211,7 @@ def agent_match_feedback(match_id):
 
         match.user_feedback = feedback
         match.feedback_at = datetime.utcnow()
-        db.session.commit()
+        safe_commit()
 
         try:
             update_user_preferences(current_user.id)
@@ -282,7 +283,7 @@ def agent_status():
     if not config:
         config = AgentConfig(user_id=current_user.id)
         db.session.add(config)
-        db.session.commit()
+        safe_commit()
 
     latest_run = AgentRunHistory.query.filter_by(
         user_id=current_user.id

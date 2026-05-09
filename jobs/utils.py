@@ -8,6 +8,7 @@ from datetime import datetime
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from models import db, JobPosting
+from services.db_lock import safe_commit
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
 
@@ -38,7 +39,7 @@ def compute_all_job_embeddings():
             compute_job_embedding(job)
             updated_count += 1
 
-    db.session.commit()
+    safe_commit()
     return updated_count
 
 
@@ -210,7 +211,7 @@ def update_user_preferences(user_id):
     config.preference_embedding = preference_vector
     config.preference_updated_at = datetime.utcnow()
 
-    db.session.commit()
+    safe_commit()
 
     print(f"Updated preference embedding for user {user_id}")
     return True

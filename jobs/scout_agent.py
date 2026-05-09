@@ -14,6 +14,7 @@ import sqlite3
 import threading
 from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
+from services.db_lock import safe_commit
 from jobs.fetcher import AdzunaJobFetcher
 from jobs.utils import get_job_faiss_index, build_job_faiss_index, cosine_similarity
 import PyPDF2
@@ -163,7 +164,7 @@ class JobScoutAgent:
                     started_at=datetime.utcnow()
                 )
                 db.session.add(run_history)
-                db.session.commit()
+                safe_commit()
 
             run_id = run_history.id
             _init_run_progress(run_id)
@@ -205,7 +206,7 @@ class JobScoutAgent:
                 run_history.status = 'failed'
                 run_history.completed_at = datetime.utcnow()
                 run_history.error_message = str(e)
-                db.session.commit()
+                safe_commit()
 
                 _emit_progress(run_id, f"Error: {str(e)}")
                 _mark_done(run_id)
@@ -412,7 +413,7 @@ class JobScoutAgent:
                     print(f"Error analyzing job {job.id}: {e}")
                     continue
 
-            db.session.commit()
+            safe_commit()
 
         except Exception as e:
             print(f"Error in find_and_save_matches: {e}")

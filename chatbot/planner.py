@@ -11,7 +11,6 @@ The plan is persisted in TaskPlan / PlanStep so it survives across sessions.
 
 import json
 import logging
-import time
 from datetime import datetime
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -19,22 +18,7 @@ from langsmith import traceable
 
 from models import PlanStep, TaskPlan, db
 from schemas.output_schemas import PlanResult, ReplanResult
-
-
-def _commit_with_retry(max_retries=3, delay=0.5):
-    """Commit with retry for SQLite 'database is locked' errors."""
-    for attempt in range(max_retries):
-        try:
-            db.session.commit()
-            return
-        except Exception as e:
-            if "database is locked" in str(e) and attempt < max_retries - 1:
-                db.session.rollback()
-                time.sleep(delay * (attempt + 1))
-                logger.warning("DB locked, retrying commit (attempt %d)", attempt + 1)
-            else:
-                db.session.rollback()
-                raise
+from services.db_lock import safe_commit, safe_flush
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +95,7 @@ def generate_plan(app, user_id: int, goal: str, llm) -> TaskPlan:
 
         task_plan = TaskPlan(user_id=user_id, goal=goal, status='active')
         db.session.add(task_plan)
-        db.session.flush()
+        safe_flush()
 
         for step in plan_result.steps:
             db.session.add(PlanStep(
@@ -123,7 +107,7 @@ def generate_plan(app, user_id: int, goal: str, llm) -> TaskPlan:
                 status='pending',
             ))
 
-        _commit_with_retry()
+        safe_commit()
         logger.info("Created plan %d with %d steps for user %d: %s",
                      task_plan.id, len(plan_result.steps), user_id, goal)
         return task_plan
@@ -136,7 +120,7 @@ def execute_step(app, user_id: int, step: PlanStep, tools_by_name: dict, llm) ->
     """Execute a single PlanStep. Returns a result summary string."""
     with app.app_context():
         step.status = 'running'
-        _commit_with_retry()
+        safe_commit()
 
         if step.tool_name and step.tool_name in tools_by_name:
             tool_fn = tools_by_name[step.tool_name]
@@ -164,7 +148,7 @@ def execute_step(app, user_id: int, step: PlanStep, tools_by_name: dict, llm) ->
         step.status = 'done'
         step.result_summary = result
         step.completed_at = datetime.utcnow()
-        _commit_with_retry()
+        safe_commit()
 
         logger.info("Completed step %d (tool=%s) for plan step_order=%d",
                      step.id, step.tool_name or 'reasoning', step.step_order)
@@ -210,7 +194,7 @@ def replan(app, plan: TaskPlan, latest_result: str, llm) -> bool:
 
         if not remaining:
             plan.status = 'completed'
-            _commit_with_retry()
+            safe_commit()
             return True
 
         completed_summary = "\n".join(
@@ -236,7 +220,7 @@ def replan(app, plan: TaskPlan, latest_result: str, llm) -> bool:
             for s in remaining:
                 s.status = 'skipped'
             plan.status = 'completed'
-            _commit_with_retry()
+            safe_commit()
             logger.info("Plan %d marked complete by replanner", plan.id)
             return True
 
@@ -262,7 +246,7 @@ def replan(app, plan: TaskPlan, latest_result: str, llm) -> bool:
                 status='pending',
             ))
 
-        _commit_with_retry()
+        safe_commit()
         logger.info("Replanned plan %d: %d remaining steps", plan.id, len(new_steps))
         return False
 
@@ -302,7 +286,7 @@ def run_plan(app, user_id: int, goal: str, progress_cb=None) -> dict:
 
             if not next_step:
                 plan.status = 'completed'
-                _commit_with_retry()
+                safe_commit()
                 break
 
             _progress(f"Step {next_step.step_order}: {next_step.description}")

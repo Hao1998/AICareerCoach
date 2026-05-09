@@ -5,6 +5,7 @@ import requests
 import os
 from datetime import datetime
 from models import db, JobPosting
+from services.db_lock import safe_commit
 from jobs.utils import compute_job_embedding, build_job_faiss_index
 
 class AdzunaJobFetcher:
@@ -231,7 +232,7 @@ class AdzunaJobFetcher:
 
                 # Commit after each page
                 if stats['stored'] > 0:
-                    db.session.commit()
+                    safe_commit()
 
             # Rebuild FAISS index after all jobs are stored
             if stats['stored'] > 0:

@@ -29,6 +29,7 @@ import json
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 from models import db, User, Resume, AgentConfig, AgentRunHistory
+from services.db_lock import safe_commit
 from jobs.utils import build_job_faiss_index
 
 # ---------------------------------------------------------------------------
@@ -124,7 +125,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable, chec
         if not config:
             config = AgentConfig(user_id=user_id)
             db.session.add(config)
-            db.session.commit()
+            safe_commit()
 
         if not config.is_enabled:
             emit_fn(run_id, "Agent is disabled — skipping.")
@@ -257,7 +258,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable, chec
         if config:
             config.last_run_at = datetime.utcnow()
 
-        db.session.commit()
+        safe_commit()
 
         emit_fn(
             db_run_id,
@@ -278,7 +279,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable, chec
             run_history.status = "failed"
             run_history.completed_at = datetime.utcnow()
             run_history.error_message = error_msg
-            db.session.commit()
+            safe_commit()
         emit_fn(run_id, f"Error: {error_msg}")
         mark_done_fn(run_id)
 
@@ -288,7 +289,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable, chec
             run_history.status = status
             run_history.completed_at = datetime.utcnow()
             run_history.results_summary = json.dumps(summary)
-            db.session.commit()
+            safe_commit()
         mark_done_fn(run_id)
 
     # ------------------------------------------------------------------ #

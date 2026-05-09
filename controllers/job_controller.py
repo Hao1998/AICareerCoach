@@ -15,6 +15,7 @@ from flask_limiter.errors import RateLimitExceeded
 from sqlalchemy.orm import joinedload
 
 from models import db, JobPosting, JobMatch, Resume
+from services.db_lock import safe_commit
 from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import get_resume_text
 from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring_structured, get_preparation_roadmap_chain
@@ -133,7 +134,7 @@ def add_job():
         )
         compute_job_embedding(job)
         db.session.add(job)
-        db.session.commit()
+        safe_commit()
 
         try:
             build_job_faiss_index()
@@ -177,7 +178,7 @@ def rebuild_job_index():
 def delete_job(job_id):
     job = JobPosting.query.get_or_404(job_id)
     job.is_active = False
-    db.session.commit()
+    safe_commit()
 
     try:
         build_job_faiss_index()
@@ -292,7 +293,7 @@ def check_job_match(job_id):
                 gaps=json.dumps(analysis.get('skill_gaps', [])),
                 recommendation=analysis.get('recommendation', ''),
             ))
-        db.session.commit()
+        safe_commit()
         return jsonify(analysis)
 
     except Exception as e:
@@ -366,7 +367,7 @@ def tailor_resume_for_job(job_id):
                 gaps=json.dumps([]),
                 tailoring_result=json.dumps(tailoring),
             ))
-        db.session.commit()
+        safe_commit()
 
         return jsonify({
             "cached": False,
@@ -461,7 +462,7 @@ def prepare_job_roadmap(job_id):
                 gaps=json.dumps([]),
                 roadmap_result=cache_payload,
             ))
-        db.session.commit()
+        safe_commit()
 
         return jsonify({
             "cached": False,

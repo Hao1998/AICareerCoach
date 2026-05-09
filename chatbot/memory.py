@@ -18,6 +18,7 @@ from typing import Optional
 from langsmith import traceable
 
 from models import AgentConfig, ChatMessage, UserMemoryChunk, db
+from services.db_lock import safe_commit
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ Merged summary:"""
             logger.info("Updated explicit preferences for user %s: %s",
                         user_id, updated_prefs.get('summary', ''))
 
-        db.session.commit()
+        safe_commit()
 
         session_date = messages[-1].timestamp if messages else datetime.utcnow()
         index_session_memories(app, user_id, messages, llm, session_date, summary=new_summary)
@@ -237,10 +238,9 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
             db.session.add(chunk)
 
         try:
-            db.session.commit()
+            safe_commit()
             logger.info("Indexed %d memory chunks for user %s", len(chunks_to_index), user_id)
         except Exception as e:
-            db.session.rollback()
             logger.error("Failed to commit memory chunks: %s", e)
 
 

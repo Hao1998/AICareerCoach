@@ -14,6 +14,7 @@ from flask_login import login_user, logout_user, login_required, current_user
 from sqlalchemy.orm import joinedload
 
 from models import db, User, Resume, JobMatch
+from services.db_lock import safe_commit
 from form import LoginForm, RegistrationForm
 
 auth_bp = Blueprint('auth', __name__)
@@ -38,7 +39,7 @@ def login():
             return redirect(url_for('auth.login'))
 
         user.last_login = datetime.utcnow()
-        db.session.commit()
+        safe_commit()
         login_user(user, remember=form.remember_me.data)
         flash(f'Welcome back, {user.username}!', 'success')
 
@@ -64,7 +65,7 @@ def register():
         )
         user.set_password(form.password.data)
         db.session.add(user)
-        db.session.commit()
+        safe_commit()
 
         user_upload_dir = os.path.join(current_app.config['UPLOAD_FOLDER'], str(user.id))
         user_vector_dir = os.path.join('vector_index', str(user.id))
