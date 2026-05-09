@@ -15,6 +15,7 @@ from flask_limiter.errors import RateLimitExceeded
 
 from factory import limiter
 from models import db, ChatMessage
+from services.db_lock import safe_commit
 from services.input_guard import scan_message
 from services.streaming import acquire_stream_slot, release_stream_slot
 
@@ -161,7 +162,7 @@ def chat_history_api():
 @login_required
 def clear_chat_history():
     ChatMessage.query.filter_by(user_id=current_user.id).delete()
-    db.session.commit()
+    safe_commit()
     return jsonify({"success": True})
 
 

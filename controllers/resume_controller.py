@@ -16,6 +16,7 @@ from werkzeug.utils import secure_filename
 from langchain_community.vectorstores import FAISS
 
 from models import db, Resume, JobMatch, JobPosting
+from services.db_lock import safe_commit, safe_flush
 from job_utils import embeddings
 from services.resume_service import extract_text_from_pdf, get_resume_text, perform_qa, text_splitter
 from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain
@@ -61,7 +62,7 @@ def upload_file():
             file_path=file_path
         )
         db.session.add(resume)
-        db.session.flush()
+        safe_flush()
 
         resume_text = extract_text_from_pdf(file_path)
 
@@ -93,7 +94,7 @@ def upload_file():
 
         resume_analysis = get_resume_analysis_chain().run(resume=resume_text)
         resume.analysis = resume_analysis
-        db.session.commit()
+        safe_commit()
 
         matching_jobs = find_matching_jobs(resume_text, top_k=5)
 
@@ -109,7 +110,7 @@ def upload_file():
                 recommendation=match['analysis']['recommendation']
             )
             db.session.add(job_match)
-        db.session.commit()
+        safe_commit()
 
         flash('Resume uploaded and analyzed successfully!', 'success')
         return render_template('results.html',

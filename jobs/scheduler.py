@@ -213,8 +213,9 @@ class AgentScheduler:
                 status='running',
                 started_at=datetime.utcnow()
             )
+            from services.db_lock import safe_commit
             db.session.add(run_history)
-            db.session.commit()
+            safe_commit()
             run_id = run_history.id
 
         _init_run_progress(run_id)
@@ -409,8 +410,9 @@ class AgentScheduler:
                     logger.error(f"AgentConfig not found for user {user_id}")
                     return False
 
+                from services.db_lock import safe_commit
                 user_config.schedule_time = schedule_time
-                db.session.commit()
+                safe_commit()
 
                 logger.info(f"Updated schedule for user {user_id} to {schedule_time}")
 
@@ -450,8 +452,9 @@ class AgentScheduler:
                     logger.error(f"AgentConfig not found for user {user_id}")
                     return False
 
+                from services.db_lock import safe_commit
                 user_config.is_enabled = is_enabled
-                db.session.commit()
+                safe_commit()
 
                 logger.info(f"{'Enabled' if is_enabled else 'Disabled'} agent for user {user_id}")
 

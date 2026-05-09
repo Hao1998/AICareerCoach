@@ -16,6 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langsmith import traceable
 
 from models import AgentConfig, ChatMessage, JobMatch, Resume, User, db
+from services.db_lock import safe_commit
 from chatbot.memory import (
     close_and_summarize_session,
     detect_session_boundary,
@@ -226,7 +227,7 @@ class CareerCoachChatbot:
                 user_id=user_id, role='user',
                 content=message, timestamp=datetime.utcnow(),
             ))
-            db.session.commit()
+            safe_commit()
 
             user, resume, config, liked_count, disliked_count = _load_context(self.app, user_id)
             llm = get_llm()
@@ -253,7 +254,7 @@ class CareerCoachChatbot:
                 content=response_text, timestamp=datetime.utcnow(),
                 intent=intent, action_data=action_data,
             ))
-            db.session.commit()
+            safe_commit()
 
             return {
                 "response": response_text,
@@ -285,7 +286,7 @@ class CareerCoachChatbot:
                     user_id=user_id, role='user',
                     content=message, timestamp=datetime.utcnow(),
                 ))
-                db.session.commit()
+                safe_commit()
 
                 user, resume, config, liked_count, disliked_count = _load_context(self.app, user_id)
                 llm = get_streaming_llm(self.app)
@@ -313,7 +314,7 @@ class CareerCoachChatbot:
                     content=response_text, timestamp=datetime.utcnow(),
                     intent=intent, action_data=action_data,
                 ))
-                db.session.commit()
+                safe_commit()
 
                 event_queue.put({
                     "type": "done",

@@ -13,6 +13,7 @@ from langchain_core.tools import tool
 from sqlalchemy.orm import joinedload
 
 from models import AgentConfig, JobMatch, Resume, db
+from services.db_lock import safe_commit
 from services.job_service import find_matching_jobs
 from services.resume_service import get_resume_text, perform_qa
 
@@ -242,7 +243,7 @@ def build_tools(app, user_id, progress_cb=None):
                 ).first()
                 if existing_match:
                     existing_match.tailoring_result = tailoring.model_dump_json()
-                    db.session.commit()
+                    safe_commit()
 
                 return json.dumps({
                     "success": True,
@@ -386,7 +387,7 @@ def build_tools(app, user_id, progress_cb=None):
                 return json.dumps({"success": False, "error": "No active plan to abandon."})
 
             plan.status = 'abandoned'
-            db.session.commit()
+            safe_commit()
             return json.dumps({
                 "success": True,
                 "message": f"Plan '{plan.goal}' has been abandoned. You can create a new one anytime.",
