@@ -98,6 +98,38 @@ class ReplanResult(BaseModel):
     )
 
 
+# ── Job Search Planner Agent ───────────────────────────────────────────────────
+
+class JobSearchIntent(BaseModel):
+    """Structured output from the Job Search Planner Agent."""
+    keywords: list[str] = Field(
+        default_factory=list,
+        description="Specific technologies, skills, or role keywords mentioned by the user",
+    )
+    location: str | None = Field(
+        default=None,
+        description="Location preference: a city/country name, 'remote', or null if not specified.",
+    )
+    seniority_level: str = Field(
+        default="any",
+        description="One of: 'junior', 'mid', 'senior', 'lead', or 'any' if not specified.",
+    )
+    job_type: str = Field(
+        default="any",
+        description="One of: 'full-time', 'part-time', 'contract', or 'any' if not specified.",
+    )
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="How many results to return. Default 5 unless the user says otherwise (max 20).",
+    )
+    query_summary: str = Field(
+        default="",
+        description="Plain-English one-line summary of what the user is looking for.",
+    )
+
+
 # ── Security Guard ─────────────────────────────────────────────────────────────
 
 class GuardCheckResult(BaseModel):

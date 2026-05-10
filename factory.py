@@ -62,8 +62,8 @@ def create_app(config_name='default', skip_api_check=False):
         # resume text dominates the vector, causing false cache hits. These are
         # cached at the DB level (JobMatch) instead, so bypass semantic caching.
         bypass_prefixes=[
-            "You are an AI Career Coach. Analyze how well",  # job matching
-            "Role: You are an expert ATS optimization specialist",  # resume tailoring
+            "You are the Job Analyst Agent",       # JobAnalystAgent system prompt
+            "You are the Resume Tailoring Agent",  # ResumeTailoringAgent system prompt
             "Role: You are an AI Career Coach creating personalized interview",  # roadmap
         ],
     ))

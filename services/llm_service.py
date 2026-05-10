@@ -241,3 +241,19 @@ def run_keyword_extraction(resume_text: str, explicit_preferences: dict | None =
     """
     from agents import get_keyword_research_agent
     return get_keyword_research_agent().extract_keywords(resume_text, explicit_preferences)
+
+
+# ── Job Search Planning — delegates to JobSearchPlannerAgent (grok-3-mini) ────
+
+def run_job_search_planning(query: str):
+    """
+    Delegates to the JobSearchPlannerAgent (grok-3-mini).
+    Returns a typed JobSearchIntent parsed from the user's natural-language query.
+    """
+    from agents import get_job_search_planner_agent
+    from schemas.output_schemas import JobSearchIntent
+    try:
+        return get_job_search_planner_agent().plan(query)
+    except Exception:
+        # Graceful fallback: treat as a generic search with no filters
+        return JobSearchIntent(query_summary=query or "General job search")

@@ -24,9 +24,23 @@
                 {% if job.salary_range %}
                 <span class="px-4 py-2 bg-green-100 text-green-800 text-sm font-semibold rounded-full">{{ job.salary_range }}</span>
                 {% endif %}
+                {% if job.source and job.source != 'adzuna' %}
+                <span class="px-3 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">via {{ job.source }}</span>
+                {% endif %}
+                {% if job.source == 'remotive' %}
+                <span class="px-2 py-1 bg-indigo-50 text-indigo-500 text-xs rounded-full italic">Powered by Remotive</span>
+                {% endif %}
             </div>
 
-            <p class="text-sm text-gray-500">Posted: {{ job.posted_date.strftime('%B %d, %Y') if job.posted_date else 'N/A' }}</p>
+            <div class="flex items-center gap-4">
+                <p class="text-sm text-gray-500">Posted: {{ job.posted_date.strftime('%B %d, %Y') if job.posted_date else 'N/A' }}</p>
+                {% if job.source_url %}
+                <a href="{{ job.source_url }}" target="_blank" rel="noopener noreferrer"
+                   class="bg-indigo-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition">
+                    Apply on Source
+                </a>
+                {% endif %}
+            </div>
         </div>
 
         <div class="mb-8">

@@ -6,10 +6,11 @@ model each uses. Factory functions cache agent instances in app.extensions
 so model connections are reused across requests — same pattern as get_llm().
 
 Model assignments (change here to swap models for any agent):
-  SecurityGuardAgent    → grok-3-mini  (fast binary check, cheap)
-  KeywordResearchAgent  → grok-3-mini  (simple extraction, cheap)
-  JobAnalystAgent       → grok-3       (nuanced reasoning needed)
-  ResumeTailoringAgent  → grok-3       (high-quality rewriting needed)
+  SecurityGuardAgent      → grok-3-mini  (fast binary check, cheap)
+  KeywordResearchAgent    → grok-3-mini  (simple extraction, cheap)
+  JobSearchPlannerAgent   → grok-3-mini  (intent parsing, cheap)
+  JobAnalystAgent         → grok-3       (nuanced reasoning needed)
+  ResumeTailoringAgent    → grok-3       (high-quality rewriting needed)
 """
 
 import logging
@@ -54,3 +55,8 @@ def get_job_analyst_agent(app=None):
 def get_resume_tailoring_agent(app=None):
     from agents.resume_tailoring_agent import ResumeTailoringAgent
     return _get_or_create(app, "agent_resume_tailoring", ResumeTailoringAgent)
+
+
+def get_job_search_planner_agent(app=None):
+    from agents.job_search_planner_agent import JobSearchPlannerAgent
+    return _get_or_create(app, "agent_job_search_planner", JobSearchPlannerAgent)

@@ -80,8 +80,9 @@ def fetch_jobs():
             location = request.form.get('location', '').strip() or None
             max_jobs = int(request.form.get('max_jobs', 50))
             max_days_old = int(request.form.get('max_days_old', 30))
+            sources = request.form.getlist('sources') or None
 
-            stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old)
+            stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old, sources=sources)
 
             if stats['errors'] > 0:
                 return render_template('fetch_jobs.html',
@@ -105,8 +106,9 @@ def fetch_jobs_api():
         location = data.get('location')
         max_jobs = int(data.get('max_jobs', 50))
         max_days_old = int(data.get('max_days_old', 30))
+        sources = data.get('sources')
 
-        stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old)
+        stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old, sources=sources)
 
         if stats['errors'] > 0:
             return jsonify({'success': False, 'stats': stats,

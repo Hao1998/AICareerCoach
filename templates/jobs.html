@@ -37,7 +37,7 @@
         <div class="flex gap-3">
             <a href="/jobs/fetch"
                class="bg-purple-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-purple-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105">
-                Fetch from Adzuna
+                Fetch Jobs
             </a>
             <a href="/jobs/add"
                class="bg-green-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-green-700 transition duration-200 ease-in-out transform hover:-translate-y-1 hover:scale-105">
@@ -58,11 +58,11 @@
     {% if jobs|length == 0 %}
         <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-8 text-center">
             <h2 class="text-2xl font-bold text-yellow-800 mb-4">No Jobs Available</h2>
-            <p class="text-yellow-700 mb-4">Start by fetching jobs from Adzuna or add your own!</p>
+            <p class="text-yellow-700 mb-4">Start by fetching jobs from multiple sources or add your own!</p>
             <div class="flex gap-3 justify-center">
                 <a href="/jobs/fetch"
                    class="inline-block bg-purple-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-purple-700 transition">
-                    Fetch from Adzuna
+                    Fetch Jobs
                 </a>
                 <a href="/jobs/add"
                    class="inline-block bg-yellow-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-yellow-700 transition">
@@ -87,6 +87,12 @@
                                 {% endif %}
                                 {% if job.salary_range %}
                                     <span class="px-3 py-1 bg-green-100 text-green-800 text-sm rounded-full">{{ job.salary_range }}</span>
+                                {% endif %}
+                                {% if job.source and job.source != 'adzuna' %}
+                                    <span class="px-3 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">via {{ job.source }}</span>
+                                {% endif %}
+                                {% if job.source == 'remotive' %}
+                                    <span class="px-2 py-1 bg-indigo-50 text-indigo-500 text-xs rounded-full italic">Powered by Remotive</span>
                                 {% endif %}
                             </div>
                         </div>
@@ -114,6 +120,11 @@
                            class="bg-blue-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">
                             View Details
                         </a>
+                        <a href="{{ job.source_url or '/jobs/' ~ job.id }}"
+                           {% if job.source_url %}target="_blank" rel="noopener noreferrer"{% endif %}
+                           class="bg-indigo-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition">
+                            Apply
+                        </a>
                         <button onclick='checkJobMatch({{ job.id }}, {{ job.title|tojson }}, {{ job.company|tojson }})' class="bg-green-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition">
                             Do I match this job?
                         </button>
@@ -126,6 +137,48 @@
                 </div>
                 {% endfor %}
             </div>
+        {% endif %}
+
+        {% if pagination and pagination.pages > 1 and not is_chat_filtered %}
+        <div class="mt-8 flex items-center justify-center gap-1">
+            {% if pagination.has_prev %}
+                <a href="?page={{ pagination.prev_num }}"
+                   class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition">
+                    &laquo; Prev
+                </a>
+            {% else %}
+                <span class="px-3 py-2 text-sm font-medium text-gray-400 bg-gray-50 border border-gray-200 rounded-lg cursor-not-allowed">
+                    &laquo; Prev
+                </span>
+            {% endif %}
+
+            {% for p in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+                {% if p %}
+                    {% if p == pagination.page %}
+                        <span class="px-3 py-2 text-sm font-bold text-white bg-blue-600 border border-blue-600 rounded-lg">{{ p }}</span>
+                    {% else %}
+                        <a href="?page={{ p }}"
+                           class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition">{{ p }}</a>
+                    {% endif %}
+                {% else %}
+                    <span class="px-2 py-2 text-gray-400 text-sm">…</span>
+                {% endif %}
+            {% endfor %}
+
+            {% if pagination.has_next %}
+                <a href="?page={{ pagination.next_num }}"
+                   class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition">
+                    Next &raquo;
+                </a>
+            {% else %}
+                <span class="px-3 py-2 text-sm font-medium text-gray-400 bg-gray-50 border border-gray-200 rounded-lg cursor-not-allowed">
+                    Next &raquo;
+                </span>
+            {% endif %}
+        </div>
+        <p class="text-center text-sm text-gray-500 mt-2">
+            Page {{ pagination.page }} of {{ pagination.pages }} &mdash; {{ pagination.total }} total jobs
+        </p>
         {% endif %}
 
         <div class="mt-8 flex justify-between">
