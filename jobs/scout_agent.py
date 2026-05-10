@@ -15,7 +15,6 @@ import threading
 from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from services.db_lock import safe_commit
-from jobs.fetcher import AdzunaJobFetcher
 from jobs.utils import get_job_faiss_index, build_job_faiss_index, cosine_similarity
 import PyPDF2
 import numpy as np
@@ -182,6 +181,7 @@ class JobScoutAgent:
                 "adzuna_location": None,
                 "adzuna_max_jobs": None,
                 "adzuna_max_days_old": None,
+                "enabled_sources": None,
                 "resume_id": None,
                 "resume_filename": None,
                 "resume_text": None,
@@ -250,42 +250,43 @@ class JobScoutAgent:
             return "software engineer"
 
     def _fetch_new_jobs(self, keywords, config):
-        """
-        TOOL USE: Fetch new jobs from external API
+        """Fetch new jobs from all sources enabled in the user's config."""
+        from jobs.fetchers.registry import fetch_from_sources
+        from job_fetcher import fetch_jobs_from_adzuna
 
-        Agent uses Adzuna API to get fresh job postings
-        Uses user-specific preferences for location and max_jobs
-        """
+        location = config.adzuna_location
+        max_jobs = config.adzuna_max_jobs or 20
+        max_days_old = config.adzuna_max_days_old or 30
+        sources = config.enabled_sources or ['adzuna']
+
+        print(f"[DEBUG] Fetching jobs — keywords: {keywords}, location: {location}, "
+              f"max_jobs: {max_jobs}, max_days_old: {max_days_old}, sources: {sources}")
+
         try:
-            fetcher = AdzunaJobFetcher()
+            if sources == ['adzuna']:
+                stats = fetch_jobs_from_adzuna(
+                    keywords=keywords,
+                    location=location,
+                    max_jobs=max_jobs,
+                    max_days_old=max_days_old,
+                )
+            else:
+                result = fetch_from_sources(
+                    sources=sources,
+                    keywords=keywords,
+                    location=location,
+                    max_jobs_per_source=max_jobs,
+                    max_days_old=max_days_old,
+                )
+                stats = result['totals']
 
-            # Get user-specific preferences from config
-            location = config.adzuna_location  # User's preferred location
-            max_jobs = config.adzuna_max_jobs if config.adzuna_max_jobs else 20  # Default to 20 if not set
-            max_days_old = config.adzuna_max_days_old if config.adzuna_max_days_old else 30  # Default to 30 if not set
-
-            # Fetch recent jobs using user preferences
-            print(f"[DEBUG] Fetching jobs — keywords: {keywords}, location: {location}, max_jobs: {max_jobs}, max_days_old: {max_days_old}")
-            stats = fetcher.fetch_and_store_jobs(
-                keywords=keywords,
-                location=location,
-                max_jobs=max_jobs,
-                max_days_old=max_days_old,
-                skip_duplicates=True
-            )
-
-            print(f"[DEBUG] Fetch stats — fetched: {stats.get('fetched')}, stored: {stats.get('stored')}, duplicates: {stats.get('duplicates')}, errors: {stats.get('errors')}, error_messages: {stats.get('error_messages')}")
+            print(f"[DEBUG] Fetch stats — fetched: {stats.get('fetched')}, stored: {stats.get('stored')}, "
+                  f"duplicates: {stats.get('duplicates')}, errors: {stats.get('errors')}")
             return stats
 
         except Exception as e:
             print(f"Error fetching jobs: {e}")
-            return {
-                'fetched': 0,
-                'stored': 0,
-                'duplicates': 0,
-                'errors': 1,
-                'error_messages': [str(e)]
-            }
+            return {'fetched': 0, 'stored': 0, 'duplicates': 0, 'errors': 1, 'error_messages': [str(e)]}
 
     def _find_and_save_matches(self, user_id, resume_id, resume_text, resume_filename,
                                threshold, max_results, run_history_id, explicit_preferences=None):
@@ -364,13 +365,13 @@ class JobScoutAgent:
                     )
                     # analysis is a JobMatchResult — typed fields, no parsing risk
 
-                    base_match_score = analysis.match_score
+                    base_match_score = float(analysis.match_score)
 
                     # Hybrid scoring: 70% resume match + 30% preference match
                     if using_preferences and job.embedding is not None:
                         preference_similarity = cosine_similarity(user_preference_vector, job.embedding)
-                        preference_score = (preference_similarity + 1) * 50
-                        final_score = 0.7 * base_match_score + 0.3 * preference_score
+                        preference_score = float((preference_similarity + 1) * 50)
+                        final_score = float(0.7 * base_match_score + 0.3 * preference_score)
                         print(f"Job {job.id}: Resume={base_match_score:.1f}, Pref={preference_score:.1f}, Final={final_score:.1f}")
                     else:
                         final_score = base_match_score
@@ -388,7 +389,7 @@ class JobScoutAgent:
                             resume_id=resume_id,
                             resume_filename=resume_filename,
                             job_id=job.id,
-                            match_score=final_score,
+                            match_score=float(final_score),
                             matched_skills=json.dumps(analysis.matched_skills),
                             gaps=json.dumps(analysis.skill_gaps),
                             recommendation=analysis.recommendation,
@@ -401,7 +402,7 @@ class JobScoutAgent:
                             'job_id': job.id,
                             'job_title': job.title,
                             'company': job.company,
-                            'match_score': final_score,
+                            'match_score': float(final_score),
                             'matched_skills': analysis.matched_skills,
                             'skill_gaps': analysis.skill_gaps,
                         })

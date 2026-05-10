@@ -98,6 +98,9 @@ class JobPosting(db.Model):
     description = db.Column(db.Text, nullable=False)
     requirements = db.Column(db.Text)
     salary_range = db.Column(db.String(100))
+    source = db.Column(db.String(30), nullable=False, default='adzuna', index=True)
+    source_id = db.Column(db.String(300))
+    source_url = db.Column(db.String(500))
     posted_date = db.Column(db.DateTime, default=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True, index=True)
 
@@ -122,6 +125,8 @@ class JobPosting(db.Model):
             'description': self.description,
             'requirements': self.requirements,
             'salary_range': self.salary_range,
+            'source': self.source,
+            'source_url': self.source_url,
             'posted_date': self.posted_date.isoformat() if self.posted_date else None,
             'is_active': self.is_active
         }
@@ -193,10 +198,11 @@ class AgentConfig(db.Model):
     preference_embedding = db.Column(db.PickleType)  # Learned user preference vector
     preference_updated_at = db.Column(db.DateTime)  # When preferences were last computed
 
-    # Adzuna API preferences (for job fetching)
+    # Job fetching preferences
     adzuna_location = db.Column(db.String(200))  # User's preferred job search location
     adzuna_max_jobs = db.Column(db.Integer, default=20)  # Max jobs to fetch per run
     adzuna_max_days_old = db.Column(db.Integer, default=30)  # Max age of jobs in days
+    enabled_sources = db.Column(db.JSON, nullable=True)  # e.g. ["adzuna","remotive"] — null means ["adzuna"]
 
     # Chat conversation summary (rolling LLM-generated summary of past sessions)
     conversation_summary = db.Column(db.Text, nullable=True)
@@ -224,7 +230,8 @@ class AgentConfig(db.Model):
             'has_preferences': self.preference_embedding is not None,
             'adzuna_location': self.adzuna_location,
             'adzuna_max_jobs': self.adzuna_max_jobs,
-            'adzuna_max_days_old': self.adzuna_max_days_old
+            'adzuna_max_days_old': self.adzuna_max_days_old,
+            'enabled_sources': self.enabled_sources or ['adzuna'],
         }
 
     def __repr__(self):

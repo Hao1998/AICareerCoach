@@ -29,11 +29,67 @@ def build_tools(app, user_id, progress_cb=None):
         if progress_cb:
             progress_cb(label)
 
+    # ── Seniority and job-type keyword maps used by the intent filter ──────────
+    _SENIORITY_KEYWORDS = {
+        "junior":  ["junior", "entry level", "entry-level", "jr.", "jr ", "associate", "graduate", "intern"],
+        "mid":     ["mid ", "mid-level", "intermediate"],
+        "senior":  ["senior", "sr.", "sr ", "experienced", "principal", "staff"],
+        "lead":    ["lead", "principal", "staff", "head of", "director", "manager"],
+    }
+    _JOB_TYPE_KEYWORDS = {
+        "part-time": ["part-time", "part time"],
+        "contract":  ["contract", "freelance", "temporary", "temp "],
+    }
+
+    def _intent_multiplier(job, intent) -> float:
+        """
+        Returns a soft-filter multiplier in [0.41, 1.0] that down-ranks jobs
+        which don't match the user's stated intent.  Each unmatched filter
+        applies a ×0.8 penalty, so misses compound without hard-excluding jobs.
+        """
+        multiplier = 1.0
+        full_text = (
+            f"{job.title} {job.description or ''} {job.requirements or ''}"
+        ).lower()
+        loc_text = (job.location or "").lower()
+
+        # Location
+        if intent.location:
+            loc = intent.location.lower()
+            if loc == "remote":
+                if "remote" not in loc_text and "remote" not in full_text[:600]:
+                    multiplier *= 0.8
+            elif loc not in loc_text:
+                multiplier *= 0.8
+
+        # Seniority
+        if intent.seniority_level and intent.seniority_level != "any":
+            title_lower = job.title.lower()
+            level_words = _SENIORITY_KEYWORDS.get(intent.seniority_level, [])
+            if level_words and not any(kw in title_lower for kw in level_words):
+                multiplier *= 0.8
+
+        # Job type (full-time is the default — no penalty for it)
+        if intent.job_type and intent.job_type not in ("any", "full-time"):
+            type_words = _JOB_TYPE_KEYWORDS.get(intent.job_type, [])
+            if type_words and not any(kw in full_text for kw in type_words):
+                multiplier *= 0.8
+
+        # Keywords
+        if intent.keywords:
+            kw_lower = [kw.lower() for kw in intent.keywords]
+            if not any(kw in full_text for kw in kw_lower):
+                multiplier *= 0.8
+
+        return multiplier
+
     @tool
     def find_top_jobs(query: str) -> str:
-        """Find the top 5 matching jobs for the user based on their resume. Use this when the user asks to find jobs, get job recommendations, or match their resume to jobs. The query parameter can be a description of what kind of jobs they want."""
+        """Find the top matching jobs for the user based on their resume and the chat request. Use this when the user asks to find jobs, get job recommendations, or match their resume to jobs. The query parameter is exactly what the user said — include location, seniority, job type, and count if they mentioned them."""
         with app.app_context():
             from job_utils import cosine_similarity
+            from services.llm_service import run_job_search_planning
+
             resume = Resume.query.filter_by(
                 user_id=user_id, is_active=True
             ).order_by(Resume.uploaded_at.desc()).first()
@@ -42,12 +98,50 @@ def build_tools(app, user_id, progress_cb=None):
                 return json.dumps({"success": False, "error": "No resume found. Please upload a resume first."})
 
             try:
+                # ── 1. Parse the user's query into structured intent ──────────
+                _progress("Understanding your request…")
+                intent = run_job_search_planning(query)
+                logger.info(
+                    "find_top_jobs intent — keywords=%s location=%s seniority=%s "
+                    "job_type=%s top_k=%d",
+                    intent.keywords, intent.location, intent.seniority_level,
+                    intent.job_type, intent.top_k,
+                )
+
+                # ── 2. Build an augmented FAISS search query ─────────────────
+                # Steer the vector search toward what the user asked for while
+                # keeping the resume as the primary signal.
                 _progress("Reading your resume…")
                 resume_text = get_resume_text(resume)
-                _progress("Searching job database…")
-                candidates = find_matching_jobs(resume_text, top_k=20, candidate_k=40)
-                _progress("Ranking matches…")
 
+                search_query = resume_text
+                extras = []
+                if intent.keywords:
+                    extras.append(f"Skills and technologies: {', '.join(intent.keywords)}")
+                if intent.location and intent.location.lower() == "remote":
+                    extras.append("Preference: remote work")
+                if intent.seniority_level and intent.seniority_level != "any":
+                    extras.append(f"Seniority level: {intent.seniority_level}")
+                if extras:
+                    search_query += "\n\n" + "\n".join(extras)
+
+                # ── 3. Expand candidate pool when filters will shrink it ──────
+                active_filters = sum([
+                    bool(intent.keywords),
+                    intent.location is not None,
+                    intent.seniority_level != "any",
+                    intent.job_type not in ("any", "full-time"),
+                ])
+                candidate_k = 40 + active_filters * 20   # up to 120
+
+                _progress("Searching job database…")
+                # Fetch more candidates (top_k) than we'll return so the
+                # intent filter has a large enough pool to work with.
+                fetch_k = min(candidate_k, max(intent.top_k * 4, 20))
+                candidates = find_matching_jobs(search_query, top_k=fetch_k, candidate_k=candidate_k)
+
+                # ── 4. Hybrid scoring + intent soft-filter ────────────────────
+                _progress("Ranking matches…")
                 config = AgentConfig.query.filter_by(user_id=user_id).first()
                 preference_vector = config.preference_embedding if config else None
                 using_preferences = preference_vector is not None
@@ -56,26 +150,60 @@ def build_tools(app, user_id, progress_cb=None):
                 for m in candidates:
                     job = m['job']
                     base_score = m['analysis'].get('match_score', 0)
+
+                    # 70/30 resume + preference hybrid (unchanged)
                     if using_preferences and job.embedding is not None:
                         pref_similarity = cosine_similarity(preference_vector, job.embedding)
                         pref_score = (pref_similarity + 1) * 50
-                        final_score = 0.7 * base_score + 0.3 * pref_score
+                        hybrid_score = 0.7 * base_score + 0.3 * pref_score
                     else:
-                        final_score = base_score
-                    scored.append({**m, 'final_score': final_score})
+                        hybrid_score = base_score
+
+                    # Intent soft-filter multiplier
+                    multiplier = _intent_multiplier(job, intent)
+                    final_score = hybrid_score * multiplier
+
+                    scored.append({**m, 'final_score': final_score, 'intent_multiplier': multiplier})
 
                 scored.sort(key=lambda x: x['final_score'], reverse=True)
-                top_matches = scored[:5]
+                top_matches = scored[:intent.top_k]
 
+                # ── 5. Build response ─────────────────────────────────────────
                 jobs, job_ids = [], []
                 for m in top_matches:
                     job = m['job']
-                    jobs.append({"id": job.id, "title": job.title, "company": job.company,
-                                 "match_score": round(m['final_score'], 1)})
+                    jobs.append({
+                        "id": job.id,
+                        "title": job.title,
+                        "company": job.company,
+                        "location": job.location or "",
+                        "match_score": round(m['final_score'], 1),
+                    })
                     job_ids.append(job.id)
 
-                return json.dumps({"success": True, "jobs": jobs, "action": "redirect_to_jobs",
-                                   "job_ids": job_ids, "personalized": using_preferences})
+                # Surface which filters were actually applied so the LLM can
+                # craft a response that references them ("Here are 3 senior
+                # remote Python roles matching your resume…").
+                filters_applied = {}
+                if intent.keywords:
+                    filters_applied["keywords"] = intent.keywords
+                if intent.location:
+                    filters_applied["location"] = intent.location
+                if intent.seniority_level != "any":
+                    filters_applied["seniority"] = intent.seniority_level
+                if intent.job_type not in ("any", "full-time"):
+                    filters_applied["job_type"] = intent.job_type
+
+                return json.dumps({
+                    "success": True,
+                    "jobs": jobs,
+                    "action": "redirect_to_jobs",
+                    "job_ids": job_ids,
+                    "personalized": using_preferences,
+                    "filters_applied": filters_applied,
+                    "query_interpreted_as": intent.query_summary or query,
+                    "count": len(jobs),
+                })
             except Exception as e:
                 logger.error("find_top_jobs error: %s", e)
                 return json.dumps({"success": False, "error": str(e)})
@@ -96,7 +224,7 @@ def build_tools(app, user_id, progress_cb=None):
         with app.app_context():
             from flask import current_app
             try:
-                _progress("Fetching jobs from Adzuna…")
+                _progress("Fetching jobs from all enabled sources…")
                 result = current_app.extensions['scheduler'].trigger_manual_run(user_id)
                 return json.dumps({
                     "success": result['status'] == 'success',
@@ -146,11 +274,11 @@ def build_tools(app, user_id, progress_cb=None):
         features = {
             "resume_upload": "Upload your PDF resume to get an AI-powered analysis. The system extracts text, creates a vector index for Q&A, and provides a comprehensive summary of your skills, experience, and career trajectory.",
             "job_matching": "The job matching system uses a two-stage approach: first, FAISS vector search finds the most relevant jobs quickly, then the LLM analyzes your resume against each job for detailed match scores, matched skills, skill gaps, and recommendations.",
-            "job_scout_agent": "The Job Scout Agent is an autonomous agent that runs on a schedule (or manually). It fetches new jobs from Adzuna, analyzes them against your resume, and saves high-quality matches for you to review. Configure it from the Agent Dashboard.",
+            "job_scout_agent": "The Job Scout Agent is an autonomous agent that runs on a schedule (or manually). It fetches new jobs from your enabled job sources (Adzuna, Remotive, Jobicy, RemoteOK, Himalayas, The Muse, Arbeitnow), analyzes them against your resume, and saves high-quality matches for you to review. Configure it and select your sources from the Agent Dashboard.",
             "resume_qa": "Ask any question about your resume and get AI-powered answers. The system uses your resume's vector index to find relevant sections and provide accurate responses about your skills, experience, and qualifications.",
             "interview_roadmap": "Generate a personalized preparation roadmap for any job. It creates a phased plan with skills to learn, resources, projects, milestones, and progressive interview questions tailored to your skill gaps.",
             "job_feedback": "Provide feedback on job matches (interested, not interested, applied) to help the system learn your preferences. Over time, the agent learns to find better matches based on your feedback patterns.",
-            "fetch_jobs": "Fetch real job postings from the Adzuna API. You can filter by keywords, location, and job age. Fetched jobs are stored in the database and available for matching.",
+            "fetch_jobs": "Fetch real job postings from multiple job boards: Adzuna, Remotive, Jobicy, RemoteOK, Himalayas, The Muse, and Arbeitnow. You can select which sources to use, filter by keywords and location, and all fetched jobs are stored for matching.",
             "agent_config": "Configure the Job Scout Agent's behavior: schedule time, timezone, match threshold (minimum score to save), max results per run, and Adzuna search preferences (location, max jobs, max age).",
             "resume_tailoring": "ATS-optimize your resume for a specific job. The system searches the job database for the target role, then uses an LLM to analyze keyword gaps, rewrite your Professional Summary, reorder your Skills section, and reframe up to 5 experience bullets using the job's language.",
         }

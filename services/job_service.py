@@ -14,6 +14,7 @@ from langsmith import traceable
 
 from job_utils import embeddings, get_job_faiss_index
 from job_fetcher import fetch_jobs_from_adzuna
+from jobs.fetchers.registry import fetch_from_sources
 
 # FAISS and HuggingFace embeddings are CPU-bound C extensions that gevent
 # cannot patch. Spawning them on gevent's thread pool hands the blocking work
@@ -202,15 +203,20 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         return find_matching_jobs_old(resume_text, top_k)
 
 
-def fetch_and_save_jobs(user_id: int, keywords, location, max_jobs: int, max_days_old: int) -> dict:
+def fetch_and_save_jobs(user_id: int, keywords, location, max_jobs: int,
+                        max_days_old: int, sources: list[str] | None = None) -> dict:
     """
-    Validate params, persist Adzuna preferences to AgentConfig, fetch jobs,
-    and return the stats dict from fetch_jobs_from_adzuna.
+    Validate params, persist preferences to AgentConfig, fetch jobs from
+    selected sources, and return aggregated stats.
+
+    When sources is None, falls back to the user's enabled_sources config
+    (default: ["adzuna"] for backward compat).
 
     Raises ValueError for invalid params so the caller can surface the message.
     Used by both the HTML form endpoint and the JSON API endpoint.
     """
     from models import AgentConfig, db
+    from services.db_lock import safe_commit
 
     if max_jobs < 1 or max_jobs > 200:
         raise ValueError("max_jobs must be between 1 and 200")
@@ -224,9 +230,23 @@ def fetch_and_save_jobs(user_id: int, keywords, location, max_jobs: int, max_day
         config.adzuna_location = location if str(location).strip() else None
     config.adzuna_max_jobs = max_jobs
     config.adzuna_max_days_old = max_days_old
-    db.session.commit()
+    if sources is not None:
+        config.enabled_sources = sources
+    safe_commit()
 
-    return fetch_jobs_from_adzuna(
-        keywords=keywords, location=location,
-        max_jobs=max_jobs, max_days_old=max_days_old,
+    active_sources = sources or config.enabled_sources or ['adzuna']
+
+    if active_sources == ['adzuna']:
+        return fetch_jobs_from_adzuna(
+            keywords=keywords, location=location,
+            max_jobs=max_jobs, max_days_old=max_days_old,
+        )
+
+    result = fetch_from_sources(
+        sources=active_sources,
+        keywords=keywords,
+        location=location,
+        max_jobs_per_source=max_jobs,
+        max_days_old=max_days_old,
     )
+    return result['totals']

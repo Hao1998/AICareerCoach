@@ -4,17 +4,17 @@
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fetch Jobs from Adzuna</title>
+    <title>Fetch Jobs</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/framer-motion@10.12.16/dist/framer-motion.js"></script>
 </head>
 <body class="bg-gradient-to-br from-blue-50 to-blue-100 min-h-screen flex items-center justify-center p-4">
     <div id="container" class="bg-white rounded-xl shadow-2xl p-8 max-w-3xl w-full">
         <h1 class="text-4xl font-bold mb-2 text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-blue-400">
-            Fetch Jobs from Adzuna
+            Fetch Jobs
         </h1>
         <p class="text-gray-600 text-center mb-6">
-            Search and import jobs from Adzuna's job board aggregator
+            Search and import jobs from multiple job boards
         </p>
 
         {% if error %}
@@ -88,16 +88,69 @@
                 </div>
             </div>
 
-            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h3 class="font-bold text-blue-800 mb-2">📋 Setup Required</h3>
-                <p class="text-sm text-blue-700 mb-2">
-                    To use this feature, you need Adzuna API credentials:
-                </p>
-                <ol class="text-sm text-blue-700 list-decimal list-inside space-y-1">
-                    <li>Visit <a href="https://developer.adzuna.com/" target="_blank" class="underline font-semibold">developer.adzuna.com</a> to register</li>
-                    <li>Get your App ID and App Key</li>
-                    <li>Set environment variables: <code class="bg-blue-100 px-1 rounded">ADZUNA_APP_ID</code> and <code class="bg-blue-100 px-1 rounded">ADZUNA_APP_KEY</code></li>
-                </ol>
+            <div>
+                <label class="block text-sm font-bold text-gray-700 mb-2">
+                    Job Sources
+                </label>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    <label class="flex items-center gap-2 p-2 border border-gray-200 rounded-lg hover:bg-blue-50 cursor-pointer transition">
+                        <input type="checkbox" name="sources" value="adzuna" checked
+                               class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">Adzuna</span>
+                            <p class="text-xs text-gray-500">Global job aggregator</p>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-2 p-2 border border-gray-200 rounded-lg hover:bg-blue-50 cursor-pointer transition">
+                        <input type="checkbox" name="sources" value="remotive"
+                               class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">Remotive</span>
+                            <p class="text-xs text-gray-500">Remote jobs</p>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-2 p-2 border border-gray-200 rounded-lg hover:bg-blue-50 cursor-pointer transition">
+                        <input type="checkbox" name="sources" value="jobicy"
+                               class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">Jobicy</span>
+                            <p class="text-xs text-gray-500">Remote jobs with salary</p>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-2 p-2 border border-gray-200 rounded-lg hover:bg-blue-50 cursor-pointer transition">
+                        <input type="checkbox" name="sources" value="remoteok"
+                               class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">RemoteOK</span>
+                            <p class="text-xs text-gray-500">Remote tech jobs</p>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-2 p-2 border border-gray-200 rounded-lg hover:bg-blue-50 cursor-pointer transition">
+                        <input type="checkbox" name="sources" value="himalayas"
+                               class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">Himalayas</span>
+                            <p class="text-xs text-gray-500">Remote + tech stack</p>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-2 p-2 border border-gray-200 rounded-lg hover:bg-blue-50 cursor-pointer transition">
+                        <input type="checkbox" name="sources" value="themuse"
+                               class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">The Muse</span>
+                            <p class="text-xs text-gray-500">Jobs + company info</p>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-2 p-2 border border-gray-200 rounded-lg hover:bg-blue-50 cursor-pointer transition">
+                        <input type="checkbox" name="sources" value="arbeitnow"
+                               class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">Arbeitnow</span>
+                            <p class="text-xs text-gray-500">Europe + remote</p>
+                        </div>
+                    </label>
+                </div>
+                <p class="text-xs text-gray-500 mt-2">Select one or more sources. Adzuna requires API credentials (set <code class="bg-gray-100 px-1 rounded">ADZUNA_APP_ID</code> and <code class="bg-gray-100 px-1 rounded">ADZUNA_APP_KEY</code>). All other sources are free with no signup.</p>
             </div>
 
             <div class="flex gap-4 justify-end">

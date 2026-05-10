@@ -3,6 +3,7 @@ from agents.coordinator import (
     get_keyword_research_agent,
     get_job_analyst_agent,
     get_resume_tailoring_agent,
+    get_job_search_planner_agent,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "get_keyword_research_agent",
     "get_job_analyst_agent",
     "get_resume_tailoring_agent",
+    "get_job_search_planner_agent",
 ]

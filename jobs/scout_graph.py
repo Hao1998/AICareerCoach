@@ -51,6 +51,7 @@ class JobScoutState(TypedDict):
     adzuna_location: Optional[str]
     adzuna_max_jobs: Optional[int]
     adzuna_max_days_old: Optional[int]
+    enabled_sources: Optional[List[str]]
     explicit_preferences: Optional[dict]  # preferences expressed via chat
 
     # ---- populated by load_resume ----
@@ -139,6 +140,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable, chec
             "adzuna_location": config.adzuna_location,
             "adzuna_max_jobs": config.adzuna_max_jobs or 20,
             "adzuna_max_days_old": config.adzuna_max_days_old or 30,
+            "enabled_sources": config.enabled_sources or ['adzuna'],
             "explicit_preferences": config.explicit_preferences,
         }
 
@@ -193,6 +195,7 @@ def build_job_scout_graph(agent, emit_fn: Callable, mark_done_fn: Callable, chec
             adzuna_location = state["adzuna_location"]
             adzuna_max_jobs = state["adzuna_max_jobs"]
             adzuna_max_days_old = state["adzuna_max_days_old"]
+            enabled_sources = state.get("enabled_sources") or ['adzuna']
 
         job_stats = agent._fetch_new_jobs(state["keywords"], _ConfigProxy())
         emit_fn(
