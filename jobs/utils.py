@@ -3,10 +3,12 @@ Job Utilities - Shared functions for job embedding and FAISS indexing
 """
 
 import os
+import re
 import threading
 from datetime import datetime
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from rank_bm25 import BM25Okapi
 from models import db, JobPosting
 from services.db_lock import safe_commit
 import numpy as np
@@ -21,6 +23,15 @@ JOB_VECTOR_INDEX = 'job_vector_index'
 # Prevents concurrent threads from writing the FAISS index at the same time,
 # which would corrupt index.faiss / index.pkl if writes interleave.
 _index_rebuild_lock = threading.RLock()
+
+# In-memory BM25 index cache: (BM25Okapi, [job_ids]) or None
+_bm25_cache: tuple | None = None
+_bm25_lock = threading.RLock()
+
+
+def tokenize_for_bm25(text: str) -> list[str]:
+    """Tokenize text for BM25, preserving tech terms like C++, Node.js, .NET."""
+    return re.findall(r'[a-zA-Z0-9][a-zA-Z0-9+#.\-]*', text.lower())
 
 def compute_job_embedding(job):
     """Compute and store embedding for a single job"""
@@ -41,6 +52,37 @@ def compute_all_job_embeddings():
 
     safe_commit()
     return updated_count
+
+
+def build_bm25_index():
+    """Build in-memory BM25 index from all active jobs. Returns (BM25Okapi, [job_ids])."""
+    global _bm25_cache
+    with _bm25_lock:
+        jobs = JobPosting.query.filter_by(is_active=True).all()
+        if not jobs:
+            _bm25_cache = None
+            return None
+        corpus = [tokenize_for_bm25(job.get_job_text()) for job in jobs]
+        job_ids = [job.id for job in jobs]
+        _bm25_cache = (BM25Okapi(corpus), job_ids)
+        print(f"Built BM25 index for {len(jobs)} jobs")
+        return _bm25_cache
+
+
+def get_bm25_index() -> tuple | None:
+    """Return cached BM25 index, building from DB if not yet initialised."""
+    global _bm25_cache
+    with _bm25_lock:
+        if _bm25_cache is None:
+            build_bm25_index()
+        return _bm25_cache
+
+
+def invalidate_bm25_index():
+    """Drop the BM25 cache so the next call to get_bm25_index() rebuilds it."""
+    global _bm25_cache
+    with _bm25_lock:
+        _bm25_cache = None
 
 
 def build_job_faiss_index():
@@ -72,6 +114,9 @@ def build_job_faiss_index():
         # Save to disk
         vectorstore.save_local(JOB_VECTOR_INDEX)
         print(f"Built FAISS index for {len(jobs)} jobs")
+
+        # Keep BM25 in sync with FAISS — invalidate so next access rebuilds
+        invalidate_bm25_index()
 
         return vectorstore
 
