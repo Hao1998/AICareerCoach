@@ -14,6 +14,7 @@ sentence-transformers
 huggingface-hub
 numpy
 faiss-cpu
+rank-bm25
 scikit-learn
 Flask-SQLAlchemy
 openai

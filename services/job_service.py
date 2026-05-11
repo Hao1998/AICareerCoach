@@ -12,7 +12,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
-from job_utils import embeddings, get_job_faiss_index
+from job_utils import embeddings, get_job_faiss_index, get_bm25_index, tokenize_for_bm25
 from job_fetcher import fetch_jobs_from_adzuna
 from jobs.fetchers.registry import fetch_from_sources
 
@@ -31,9 +31,23 @@ from services.llm_service import run_job_matching
 
 logger = logging.getLogger(__name__)
 
-# Max concurrent LLM calls per find_matching_jobs invocation.
-# Grok-3 rate limits are generous; keep this ≤ top_k to avoid wasted calls.
 _LLM_CONCURRENCY = 5
+
+
+def _reciprocal_rank_fusion(
+    ranked_lists: list[list[int]],
+    k: int = 60,
+) -> list[tuple[int, float]]:
+    """Merge multiple ranked job-id lists using Reciprocal Rank Fusion (RRF).
+
+    k=60 is the standard constant from the original RRF paper (Cormack 2009).
+    Higher k reduces the influence of top-rank positions.
+    """
+    scores: dict[int, float] = {}
+    for ranked in ranked_lists:
+        for rank, job_id in enumerate(ranked):
+            scores[job_id] = scores.get(job_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
 def calculate_embedding_similarity(resume_embedding, job_embedding):
@@ -119,12 +133,12 @@ def _analyze_job(app, resume_text: str, job: JobPosting, similarity_score: float
 @traceable(run_type="chain", name="job-matching")
 def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
     """
-    Two-stage job matching: FAISS candidate retrieval → parallel LLM analysis.
+    Three-stage hybrid job matching: dense + sparse retrieval → RRF fusion → LLM analysis.
 
-    Stage 1: Fast FAISS vector search retrieves top candidate_k jobs.
-    Stage 2: LLM analysis on the top_k candidates runs concurrently
-             (up to _LLM_CONCURRENCY threads), cutting wall-time from
-             ~N×LLM_latency down to ~1×LLM_latency.
+    Stage 1a (dense):  FAISS vector search — catches semantic similarity.
+    Stage 1b (sparse): BM25 keyword search — catches exact tech-stack matches.
+    Stage 1c (fusion): Reciprocal Rank Fusion merges both ranked lists.
+    Stage 2 (rerank):  Parallel LLM analysis on the fused top_k candidates.
     """
     try:
         job_index = get_job_faiss_index()
@@ -133,33 +147,53 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             logger.warning("No job index available, falling back to brute-force")
             return find_matching_jobs_old(resume_text, top_k)
 
+        # --- Stage 1a: FAISS dense search ---
         docs_with_scores = _run_in_thread(
             job_index.similarity_search_with_score,
             resume_text,
             k=min(candidate_k, job_index.index.ntotal),
         )
 
-        if not docs_with_scores:
+        dense_ranked = [
+            doc.metadata["job_id"]
+            for doc, _ in docs_with_scores
+            if doc.metadata.get("job_id") is not None
+        ]
+        # Build FAISS score map for use as fallback similarity score in Stage 2
+        faiss_score_map = {
+            doc.metadata["job_id"]: max(0.0, min(1.0, 1 - (dist ** 2 / 2)))
+            for doc, dist in docs_with_scores
+            if doc.metadata.get("job_id") is not None
+        }
+
+        # --- Stage 1b: BM25 sparse search ---
+        sparse_ranked: list[int] = []
+        bm25_result = get_bm25_index()
+        if bm25_result is not None:
+            bm25, bm25_job_ids = bm25_result
+            query_tokens = tokenize_for_bm25(resume_text)
+            bm25_scores = _run_in_thread(bm25.get_scores, query_tokens)
+            top_indices = np.argsort(bm25_scores)[::-1][:candidate_k]
+            sparse_ranked = [bm25_job_ids[i] for i in top_indices]
+
+        # --- Stage 1c: RRF fusion ---
+        ranked_lists = [dense_ranked] + ([sparse_ranked] if sparse_ranked else [])
+        fused = _reciprocal_rank_fusion(ranked_lists)
+        top_fused_ids = [job_id for job_id, _ in fused[:top_k]]
+
+        if not top_fused_ids:
             return []
 
-        # --- Stage 1: batch-load all candidate jobs in a single query ---
-        candidate_meta = []
-        for doc, distance in docs_with_scores[:top_k]:
-            job_id = doc.metadata.get("job_id")
-            similarity_score = max(0, min(1, 1 - (distance ** 2 / 2)))
-            candidate_meta.append((job_id, similarity_score))
-
-        job_ids = [jid for jid, _ in candidate_meta]
+        # --- Batch-load candidate jobs ---
         jobs_by_id = {
             j.id: j
             for j in JobPosting.query.filter(
-                JobPosting.id.in_(job_ids), JobPosting.is_active == True
+                JobPosting.id.in_(top_fused_ids), JobPosting.is_active == True
             ).all()
         }
-
         active_candidates = [
-            (jobs_by_id[jid], score)
-            for jid, score in candidate_meta
+            (jobs_by_id[jid], faiss_score_map.get(jid, 0.5))
+            for jid in top_fused_ids
             if jid in jobs_by_id
         ]
 
@@ -167,8 +201,7 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             return []
 
         # --- Stage 2: parallel LLM analysis ---
-        # Preserve FAISS ranking order in the output even though futures complete
-        # out of order, so the caller always gets the best-ranked jobs first.
+        # Preserve fused ranking order even though futures complete out of order.
         ordered_results = [None] * len(active_candidates)
 
         from flask import current_app
@@ -199,7 +232,7 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         return [r for r in ordered_results if r is not None]
 
     except Exception as e:
-        logger.error("Error in optimized job matching: %s, falling back to brute-force", e)
+        logger.error("Error in hybrid job matching: %s, falling back to brute-force", e)
         return find_matching_jobs_old(resume_text, top_k)
 
 
