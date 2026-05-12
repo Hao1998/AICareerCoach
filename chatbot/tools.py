@@ -9,6 +9,7 @@ from background threads.
 import json
 import logging
 
+import numpy as np
 from langchain_core.tools import tool
 from sqlalchemy.orm import joinedload
 
@@ -143,7 +144,7 @@ def build_tools(app, user_id, progress_cb=None):
                 # ── 4. Hybrid scoring + intent soft-filter ────────────────────
                 _progress("Ranking matches…")
                 config = AgentConfig.query.filter_by(user_id=user_id).first()
-                preference_vector = config.preference_embedding if config else None
+                preference_vector = np.array(config.preference_embedding) if (config and config.preference_embedding is not None) else None
                 using_preferences = preference_vector is not None
 
                 scored = []
@@ -151,9 +152,8 @@ def build_tools(app, user_id, progress_cb=None):
                     job = m['job']
                     base_score = m['analysis'].get('match_score', 0)
 
-                    # 70/30 resume + preference hybrid (unchanged)
                     if using_preferences and job.embedding is not None:
-                        pref_similarity = cosine_similarity(preference_vector, job.embedding)
+                        pref_similarity = cosine_similarity(preference_vector, np.array(job.embedding))
                         pref_score = (pref_similarity + 1) * 50
                         hybrid_score = 0.7 * base_score + 0.3 * pref_score
                     else:

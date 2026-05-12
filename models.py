@@ -107,8 +107,7 @@ class JobPosting(db.Model):
     # Store embeddings as JSON string for simplicity
     embedding_ids = db.Column(db.Text)  # Store FAISS indices (deprecated, use embedding instead)
 
-    # Pre-computed embedding vector (stored as pickled numpy array)
-    embedding = db.Column(db.PickleType)  # Store job embedding for fast retrieval
+    embedding = db.Column(db.JSON)
     embedding_updated_at = db.Column(db.DateTime)  # Track when embedding was last updated
 
     def get_job_text(self):
@@ -194,8 +193,7 @@ class AgentConfig(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # User preference learning from feedback
-    preference_embedding = db.Column(db.PickleType)  # Learned user preference vector
+    preference_embedding = db.Column(db.JSON)
     preference_updated_at = db.Column(db.DateTime)  # When preferences were last computed
 
     # Job fetching preferences
@@ -276,7 +274,7 @@ class UserMemoryChunk(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     content = db.Column(db.Text, nullable=False)
     memory_type = db.Column(db.String(50), nullable=False)  # 'session_summary' | 'fact'
-    embedding = db.Column(db.PickleType, nullable=True)
+    embedding = db.Column(db.JSON, nullable=True)
     session_date = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 

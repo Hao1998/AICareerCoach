@@ -36,7 +36,8 @@ def tokenize_for_bm25(text: str) -> list[str]:
 def compute_job_embedding(job):
     """Compute and store embedding for a single job"""
     job_text = job.get_job_text()
-    job.embedding = embeddings.embed_query(job_text)
+    vec = embeddings.embed_query(job_text)
+    job.embedding = vec if isinstance(vec, list) else list(vec)
     job.embedding_updated_at = datetime.utcnow()
     return job.embedding
 
@@ -193,23 +194,20 @@ def compute_user_preference_embedding(user_id):
     if not interested and not not_interested:
         return None
 
-    # Get embedding dimension (HuggingFace default is 768 for most models)
     embedding_dim = 768
     if interested and interested[0].job.embedding is not None:
         embedding_dim = len(interested[0].job.embedding)
     elif not_interested and not_interested[0].job.embedding is not None:
         embedding_dim = len(not_interested[0].job.embedding)
 
-    # Average embeddings of liked jobs
     if interested:
-        liked_embeddings = [match.job.embedding for match in interested]
+        liked_embeddings = [np.array(match.job.embedding) for match in interested]
         liked_avg = np.mean(liked_embeddings, axis=0)
     else:
         liked_avg = np.zeros(embedding_dim)
 
-    # Average embeddings of rejected jobs
     if not_interested:
-        rejected_embeddings = [match.job.embedding for match in not_interested]
+        rejected_embeddings = [np.array(match.job.embedding) for match in not_interested]
         rejected_avg = np.mean(rejected_embeddings, axis=0)
     else:
         rejected_avg = np.zeros(embedding_dim)
@@ -252,8 +250,7 @@ def update_user_preferences(user_id):
         config = AgentConfig(user_id=user_id)
         db.session.add(config)
 
-    # Update preference embedding
-    config.preference_embedding = preference_vector
+    config.preference_embedding = preference_vector.tolist()
     config.preference_updated_at = datetime.utcnow()
 
     safe_commit()

@@ -52,6 +52,8 @@ def _reciprocal_rank_fusion(
 
 def calculate_embedding_similarity(resume_embedding, job_embedding):
     """Calculate cosine similarity between two embeddings"""
+    resume_embedding = np.array(resume_embedding)
+    job_embedding = np.array(job_embedding)
     similarity = np.dot(resume_embedding, job_embedding) / (
         np.linalg.norm(resume_embedding) * np.linalg.norm(job_embedding)
     )

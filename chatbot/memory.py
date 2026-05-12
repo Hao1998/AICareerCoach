@@ -223,7 +223,8 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
     with app.app_context():
         for memory_type, content in chunks_to_index:
             try:
-                embedding = hf_embeddings.embed_query(content)
+                vec = hf_embeddings.embed_query(content)
+                embedding = vec if isinstance(vec, list) else list(vec)
             except Exception as e:
                 logger.error("Failed to embed memory chunk: %s", e)
                 embedding = None
