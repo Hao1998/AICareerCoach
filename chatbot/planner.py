@@ -11,14 +11,18 @@ The plan is persisted in TaskPlan / PlanStep so it survives across sessions.
 
 import json
 import logging
+import traceback
 from datetime import datetime
 
 from langchain_core.prompts import ChatPromptTemplate
 from langsmith import traceable
 
 from models import PlanStep, TaskPlan, db
-from schemas.output_schemas import PlanResult, ReplanResult
+from schemas.output_schemas import CareerRoadmap, PlanResult, ReplanResult
 from services.db_lock import safe_commit, safe_flush
+
+# Marker used to identify the final synthesis step
+SYNTHESIS_MARKER = "SYNTHESIZE:"
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +42,29 @@ TOOL_DESCRIPTIONS = """Available tools:
 # ── Planner ───────────────────────────────────────────────────────────────────
 
 PLANNER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a career coaching task planner. Given a user's career goal and their current context, generate a concrete, actionable plan.
+    ("system", """You are a career coaching task planner. Generate a two-phase plan to help a user transition into a target role.
 
 {tool_descriptions}
 
+Your plan MUST follow this exact structure — no exceptions:
+
+PHASE 1 — Context Gathering (1 to 4 tool steps, in this order as needed):
+  Step 1: get_resume_info — ask a specific question to extract the user's current skills and experience relevant to the target role
+  Step 2: find_top_jobs — search for jobs matching the target role to understand what the market requires
+  Step 3: get_recent_matches — check if the user already has good job matches for this role
+  Step 4: trigger_job_scout_agent — ONLY include if fresh job data is needed (i.e. step 3 might return stale or insufficient matches)
+
+PHASE 2 — Synthesis (ALWAYS exactly one final step):
+  Last step: tool_name must be null, description must start with "SYNTHESIZE: " followed by a one-line summary of what to synthesize.
+  This step will use all Phase 1 results to produce a complete career roadmap.
+
 Rules:
-- Each step must map to exactly one tool call OR be a reasoning-only step (tool_name = null).
-- Keep plans between 3-7 steps. Don't over-plan.
-- Order steps logically — later steps can depend on earlier results.
-- tool_input should be the actual argument string you'd pass to the tool.
-- For reasoning-only steps, tool_name and tool_input should be null.
-- Be specific — "Analyze resume for Python skills" is better than "Look at resume".
+- Total steps = Phase 1 steps (1-4) + 1 synthesis step. Do not add any other step types.
+- tool_input for get_resume_info must be a specific question, e.g. "What are Hao's skills in LangChain, Python, and cloud platforms relevant to an AI Engineer role?"
+- tool_input for find_top_jobs must be a descriptive query, e.g. "Senior AI Agentic Engineer remote"
+- tool_input for get_recent_matches must be a plain integer as a string, e.g. "10"
+- tool_input for trigger_job_scout_agent must be a short reason string
+- Be specific in every description — name the actual role and technologies involved
 """),
     ("human", """User goal: {goal}
 
@@ -58,7 +74,7 @@ User context:
 Previous memories (if any):
 {memories}
 
-Generate a plan to achieve this goal."""),
+Generate the Phase 1 + Phase 2 plan."""),
 ])
 
 
@@ -153,6 +169,82 @@ def execute_step(app, user_id: int, step: PlanStep, tools_by_name: dict, llm) ->
         logger.info("Completed step %d (tool=%s) for plan step_order=%d",
                      step.id, step.tool_name or 'reasoning', step.step_order)
         return result
+
+
+# ── Roadmap Synthesis ─────────────────────────────────────────────────────────
+
+ROADMAP_SYNTHESIS_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are a senior career coach producing a personalised career transition roadmap.
+You have already gathered all context needed (resume analysis, job market data, existing matches).
+Your job is to synthesise everything into one clear, actionable roadmap the user can follow immediately.
+
+Output a CareerRoadmap with these sections:
+- current_state: Where the user is today — their relevant skills, years of experience, and key strengths
+- target_state: What the target role actually requires — skills, experience level, domain knowledge
+- skill_gaps: Bullet list of specific missing skills or experience areas
+- strengths: Bullet list of existing skills that transfer directly to the target role
+- learning_path: 2-4 time-boxed phases, each with a focus topic, specific resources (named courses, certifications, or projects), and a measurable milestone
+- application_strategy: Concrete advice on when to start applying, what roles to target first as stepping stones, and how to position themselves
+- target_companies: Specific company names or types drawn from the job search results
+- resume_tips: 3-5 specific ATS and content tips tailored to this exact role
+- timeline_summary: A single paragraph summarising the full journey from today to landing the target role
+
+Be specific — name actual courses (e.g. "DeepLearning.AI LangChain course"), real frameworks, real companies.
+Do not be generic. Every recommendation must be grounded in the gathered context below.
+"""),
+    ("human", """Career goal: {goal}
+
+User context:
+{user_context}
+
+Gathered context from research steps:
+{gathered_context}
+
+Produce the career roadmap now."""),
+])
+
+
+def _format_roadmap(roadmap: CareerRoadmap) -> str:
+    """Convert a CareerRoadmap schema into a readable markdown string for storage."""
+    lines = []
+
+    lines.append("## Where You Are Now")
+    lines.append(roadmap.current_state)
+
+    lines.append("\n## Where You Need to Be")
+    lines.append(roadmap.target_state)
+
+    lines.append("\n## Your Strengths (Already Have)")
+    for s in roadmap.strengths:
+        lines.append(f"- {s}")
+
+    lines.append("\n## Skill Gaps (Need to Learn)")
+    for g in roadmap.skill_gaps:
+        lines.append(f"- {g}")
+
+    lines.append("\n## Learning Path")
+    for phase in roadmap.learning_path:
+        lines.append(f"\n**{phase.timeframe} — {phase.focus}**")
+        for r in phase.resources:
+            lines.append(f"  - {r}")
+        lines.append(f"  *Milestone: {phase.milestone}*")
+
+    lines.append("\n## Job Application Strategy")
+    lines.append(roadmap.application_strategy)
+
+    if roadmap.target_companies:
+        lines.append("\n## Companies to Target")
+        for c in roadmap.target_companies:
+            lines.append(f"- {c}")
+
+    lines.append("\n## Resume Tips for This Role")
+    for tip in roadmap.resume_tips:
+        lines.append(f"- {tip}")
+
+    lines.append("\n## Timeline Summary")
+    lines.append(roadmap.timeline_summary)
+
+    return "\n".join(lines)
 
 
 # ── Replanner ─────────────────────────────────────────────────────────────────
@@ -253,11 +345,12 @@ def replan(app, plan: TaskPlan, latest_result: str, llm) -> bool:
 
 # ── Main loop: Plan → Execute → Replan ────────────────────────────────────────
 
-@traceable(run_type="chain", name="task-planner-run")
-def run_plan(app, user_id: int, goal: str, progress_cb=None) -> dict:
-    """Full plan-execute-replan loop. Returns a summary of the entire run.
+def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
+    """Execute an already-generated plan step by step.
 
-    progress_cb: optional callable(message: str) for streaming updates.
+    Runs inside a SINGLE app context for the entire loop so that
+    Flask-SQLAlchemy never removes the shared session mid-execution.
+    Designed to be called from a background daemon thread.
     """
     from services.llm_service import get_llm
     from chatbot.tools import build_tools
@@ -266,54 +359,263 @@ def run_plan(app, user_id: int, goal: str, progress_cb=None) -> dict:
         if progress_cb:
             progress_cb(msg)
 
+    logger.info("[execute_plan] ▶ START plan_id=%d user_id=%d", plan_id, user_id)
+
+    try:
+        with app.app_context():
+            # ── bootstrap ────────────────────────────────────────────────────
+            plan = TaskPlan.query.get(plan_id)
+            if not plan:
+                logger.error("[execute_plan] ✗ Plan %d not found in DB", plan_id)
+                return {}
+
+            logger.info("[execute_plan] Plan found — goal='%s' status=%s", plan.goal, plan.status)
+
+            llm = get_llm()
+            logger.info("[execute_plan] LLM ready")
+
+            tools = build_tools(app, user_id)
+            tools_by_name = {t.name: t for t in tools}
+            logger.info("[execute_plan] Tools built: %s", list(tools_by_name.keys()))
+
+            # Build user context string once — reused by the synthesis step
+            from chatbot.agent import _load_context
+            user, resume, config, _, _ = _load_context(app, user_id)
+            user_context_parts = [f"Name: {user.full_name or user.username}"]
+            if resume and resume.analysis:
+                user_context_parts.append(f"Resume summary: {resume.analysis[:500]}")
+            if config and config.explicit_preferences:
+                user_context_parts.append(f"Preferences: {json.dumps(config.explicit_preferences)}")
+            user_context_str = "\n".join(user_context_parts)
+
+            step_results = []
+            max_iterations = 15
+
+            for iteration in range(max_iterations):
+                # ── pick next pending step ───────────────────────────────────
+                next_step = (PlanStep.query
+                             .filter_by(plan_id=plan_id, status='pending')
+                             .order_by(PlanStep.step_order)
+                             .first())
+
+                if not next_step:
+                    plan.status = 'completed'
+                    safe_commit()
+                    logger.info("[execute_plan] ✓ No more pending steps — plan %d completed", plan_id)
+                    break
+
+                logger.info(
+                    "[execute_plan] Iteration %d — step %d: '%s' (tool=%s)",
+                    iteration, next_step.step_order, next_step.description, next_step.tool_name,
+                )
+                _progress(f"Step {next_step.step_order}: {next_step.description}")
+
+                # ── mark running ─────────────────────────────────────────────
+                next_step.status = 'running'
+                safe_commit()
+
+                # ── execute ──────────────────────────────────────────────────
+                result = ""
+                if next_step.tool_name and next_step.tool_name in tools_by_name:
+                    tool_fn = tools_by_name[next_step.tool_name]
+                    tool_input = next_step.tool_input or ""
+                    try:
+                        result = tool_fn.invoke(tool_input)
+                        logger.info("[execute_plan] Step %d tool '%s' ✓", next_step.step_order, next_step.tool_name)
+                    except Exception as tool_exc:
+                        result = f"Tool error: {tool_exc}"
+                        logger.error("[execute_plan] Step %d tool '%s' ✗: %s",
+                                     next_step.step_order, next_step.tool_name, tool_exc)
+                elif next_step.tool_name:
+                    result = f"Unknown tool '{next_step.tool_name}'. Skipping."
+                    logger.warning("[execute_plan] Step %d unknown tool '%s'",
+                                   next_step.step_order, next_step.tool_name)
+                elif next_step.description.startswith(SYNTHESIS_MARKER):
+                    # ── roadmap synthesis step ────────────────────────────────
+                    logger.info("[execute_plan] Step %d is synthesis — building roadmap", next_step.step_order)
+                    _progress("Building your career roadmap...")
+                    try:
+                        # Collect all prior done-step results as context
+                        done_steps = (PlanStep.query
+                                      .filter(PlanStep.plan_id == plan_id,
+                                              PlanStep.status == 'done')
+                                      .order_by(PlanStep.step_order)
+                                      .all())
+                        gathered_context = "\n\n".join(
+                            f"[Step {s.step_order} — {s.description}]\n{s.result_summary or 'No result'}"
+                            for s in done_steps
+                        ) or "No context gathered."
+
+                        chain = ROADMAP_SYNTHESIS_PROMPT | llm.with_structured_output(CareerRoadmap)
+                        roadmap: CareerRoadmap = chain.invoke({
+                            "goal": plan.goal,
+                            "user_context": user_context_str,
+                            "gathered_context": gathered_context,
+                        })
+                        result = _format_roadmap(roadmap)
+                        logger.info("[execute_plan] Step %d synthesis ✓ (%d chars)", next_step.step_order, len(result))
+                    except Exception as synth_exc:
+                        result = f"Reasoning error: {synth_exc}"
+                        logger.error("[execute_plan] Step %d synthesis ✗: %s",
+                                     next_step.step_order, synth_exc)
+                else:
+                    # reasoning-only step (non-synthesis)
+                    reasoning_prompt = ChatPromptTemplate.from_messages([
+                        ("system", "You are a career coach. Analyze the information and provide insights."),
+                        ("human", "{task}"),
+                    ])
+                    try:
+                        resp = (reasoning_prompt | llm).invoke({"task": next_step.description})
+                        result = resp.content if hasattr(resp, 'content') else str(resp)
+                        logger.info("[execute_plan] Step %d reasoning ✓", next_step.step_order)
+                    except Exception as reason_exc:
+                        result = f"Reasoning error: {reason_exc}"
+                        logger.error("[execute_plan] Step %d reasoning ✗: %s",
+                                     next_step.step_order, reason_exc)
+
+                # Truncate tool/reasoning results but not the synthesis roadmap
+                is_synthesis = next_step.description.startswith(SYNTHESIS_MARKER)
+                if not is_synthesis and len(result) > 2000:
+                    result = result[:2000] + "... (truncated)"
+
+                # ── mark done ────────────────────────────────────────────────
+                next_step.status = 'done'
+                next_step.result_summary = result
+                next_step.completed_at = datetime.utcnow()
+                safe_commit()
+                logger.info("[execute_plan] Step %d saved as done", next_step.step_order)
+
+                step_results.append({
+                    "step": next_step.step_order,
+                    "description": next_step.description,
+                    "tool": next_step.tool_name,
+                    "result_preview": result[:300],
+                })
+
+                # ── replan (only on failure) ──────────────────────────────────
+                # If the step succeeded, trust the original plan and move to the
+                # next step. Calling the replanner after every success causes the
+                # LLM to regenerate the same step in a loop (observed in logs).
+                step_failed = result.startswith((
+                    "Tool error:", "Unknown tool", "Reasoning error:"
+                ))
+
+                if not step_failed:
+                    remaining_count = (PlanStep.query
+                                       .filter_by(plan_id=plan_id, status='pending')
+                                       .count())
+                    if remaining_count == 0:
+                        plan.status = 'completed'
+                        safe_commit()
+                        logger.info("[execute_plan] ✓ No remaining steps — plan %d completed", plan_id)
+                        break
+                    logger.info("[execute_plan] Step succeeded — skipping replan, %d steps left", remaining_count)
+                    continue  # straight to next iteration
+
+                # Step failed → ask LLM to adjust the remaining steps
+                logger.info("[execute_plan] Step failed — calling replanner")
+                _progress("Adjusting plan after error...")
+                try:
+                    all_steps_now = (PlanStep.query
+                                     .filter_by(plan_id=plan_id)
+                                     .order_by(PlanStep.step_order)
+                                     .all())
+                    completed = [s for s in all_steps_now if s.status == 'done']
+                    remaining = [s for s in all_steps_now if s.status == 'pending']
+
+                    if not remaining:
+                        plan.status = 'completed'
+                        safe_commit()
+                        logger.info("[execute_plan] ✓ No remaining steps after failure — plan %d done", plan_id)
+                        break
+
+                    completed_summary = "\n".join(
+                        f"Step {s.step_order}: {s.description}\n  Result: {(s.result_summary or 'N/A')[:200]}"
+                        for s in completed
+                    ) or "None yet."
+                    remaining_summary = "\n".join(
+                        f"Step {s.step_order}: {s.description} (tool: {s.tool_name or 'reasoning'})"
+                        for s in remaining
+                    )
+
+                    chain = REPLAN_PROMPT | llm.with_structured_output(ReplanResult)
+                    replan_result: ReplanResult = chain.invoke({
+                        "goal": plan.goal,
+                        "completed_summary": completed_summary,
+                        "remaining_summary": remaining_summary,
+                        "latest_result": result[:500],
+                        "tool_descriptions": TOOL_DESCRIPTIONS,
+                    })
+
+                    if replan_result.is_complete:
+                        for s in remaining:
+                            s.status = 'skipped'
+                        plan.status = 'completed'
+                        safe_commit()
+                        logger.info("[execute_plan] ✓ Replanner marked plan %d complete", plan_id)
+                        break
+
+                    max_order = max((s.step_order for s in completed), default=0)
+                    new_steps = replan_result.updated_steps
+                    for i, old_step in enumerate(remaining):
+                        if i < len(new_steps):
+                            old_step.step_order = max_order + new_steps[i].step_order
+                            old_step.description = new_steps[i].description
+                            old_step.tool_name = new_steps[i].tool_name
+                            old_step.tool_input = new_steps[i].tool_input
+                        else:
+                            old_step.status = 'skipped'
+                    for i in range(len(remaining), len(new_steps)):
+                        db.session.add(PlanStep(
+                            plan_id=plan_id,
+                            step_order=max_order + new_steps[i].step_order,
+                            description=new_steps[i].description,
+                            tool_name=new_steps[i].tool_name,
+                            tool_input=new_steps[i].tool_input,
+                            status='pending',
+                        ))
+                    safe_commit()
+                    logger.info("[execute_plan] Replanned after failure — %d remaining steps", len(new_steps))
+
+                except Exception as replan_exc:
+                    logger.error("[execute_plan] Replan failed (continuing anyway): %s", replan_exc)
+
+            # ── final summary ────────────────────────────────────────────────
+            db.session.refresh(plan)
+            all_steps = PlanStep.query.filter_by(plan_id=plan_id).order_by(PlanStep.step_order).all()
+            done_count = len([s for s in all_steps if s.status == 'done'])
+            logger.info("[execute_plan] ■ FINISHED plan %d — %d/%d steps done, status=%s",
+                        plan_id, done_count, len(all_steps), plan.status)
+
+            return {
+                "plan_id": plan_id,
+                "goal": plan.goal,
+                "status": plan.status,
+                "steps_completed": done_count,
+                "steps_total": len(all_steps),
+                "step_results": step_results,
+            }
+
+    except Exception as exc:
+        logger.error("[execute_plan] ✗ UNHANDLED ERROR for plan %d:\n%s",
+                     plan_id, traceback.format_exc())
+        return {}
+
+
+def run_plan(app, user_id: int, goal: str, progress_cb=None) -> dict:
+    """Generate and execute a plan synchronously (kept for direct callers)."""
+    from services.llm_service import get_llm
+
+    def _progress(msg):
+        if progress_cb:
+            progress_cb(msg)
+
     with app.app_context():
         llm = get_llm()
-
         _progress("Creating your personalized plan...")
         plan = generate_plan(app, user_id, goal, llm)
 
-        tools = build_tools(app, user_id, progress_cb=_progress)
-        tools_by_name = {t.name: t for t in tools}
-
-        step_results = []
-        max_iterations = 15
-
-        for iteration in range(max_iterations):
-            next_step = (PlanStep.query
-                         .filter_by(plan_id=plan.id, status='pending')
-                         .order_by(PlanStep.step_order)
-                         .first())
-
-            if not next_step:
-                plan.status = 'completed'
-                safe_commit()
-                break
-
-            _progress(f"Step {next_step.step_order}: {next_step.description}")
-            result = execute_step(app, user_id, next_step, tools_by_name, llm)
-            step_results.append({
-                "step": next_step.step_order,
-                "description": next_step.description,
-                "tool": next_step.tool_name,
-                "result_preview": result[:300],
-            })
-
-            _progress("Reviewing progress...")
-            is_complete = replan(app, plan, result, llm)
-            if is_complete:
-                break
-
-        db.session.refresh(plan)
-        all_steps = PlanStep.query.filter_by(plan_id=plan.id).order_by(PlanStep.step_order).all()
-
-        return {
-            "plan_id": plan.id,
-            "goal": plan.goal,
-            "status": plan.status,
-            "steps_completed": len([s for s in all_steps if s.status == 'done']),
-            "steps_total": len(all_steps),
-            "step_results": step_results,
-        }
+    return execute_plan(app, user_id, plan.id, progress_cb=progress_cb)
 
 
 def get_active_plan(user_id: int) -> TaskPlan | None:
@@ -327,11 +629,25 @@ def get_active_plan(user_id: int) -> TaskPlan | None:
 def format_plan_status(plan: TaskPlan) -> str:
     """Format a plan's current status for display in chat."""
     steps = PlanStep.query.filter_by(plan_id=plan.id).order_by(PlanStep.step_order).all()
+
+    # If there's a completed synthesis step, surface the roadmap first
+    synthesis_step = next(
+        (s for s in steps if s.description.startswith(SYNTHESIS_MARKER) and s.status == 'done'),
+        None
+    )
+    if synthesis_step and synthesis_step.result_summary:
+        return (
+            f"**Goal:** {plan.goal}\n"
+            f"**Status:** {plan.status}\n\n"
+            f"{synthesis_step.result_summary}"
+        )
+
+    # No synthesis yet — show step-by-step progress
     lines = [f"**Goal:** {plan.goal}", f"**Status:** {plan.status}", ""]
     for s in steps:
-        icon = {"done": "done", "running": "running", "skipped": "skipped", "pending": "pending"}.get(s.status, "?")
-        lines.append(f"  [{icon}] Step {s.step_order}: {s.description}")
-        if s.result_summary and s.status == 'done':
-            preview = s.result_summary[:150]
-            lines.append(f"         Result: {preview}")
+        icon = {"done": "✓", "running": "⟳", "skipped": "—", "pending": "○"}.get(s.status, "?")
+        label = s.description.replace(SYNTHESIS_MARKER, "Roadmap synthesis:").strip()
+        lines.append(f"  [{icon}] Step {s.step_order}: {label}")
+        if s.result_summary and s.status == 'done' and not s.description.startswith(SYNTHESIS_MARKER):
+            lines.append(f"      → {s.result_summary[:400]}")
     return "\n".join(lines)

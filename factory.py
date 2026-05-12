@@ -65,6 +65,7 @@ def create_app(config_name='default', skip_api_check=False):
             "You are the Job Analyst Agent",       # JobAnalystAgent system prompt
             "You are the Resume Tailoring Agent",  # ResumeTailoringAgent system prompt
             "Role: You are an AI Career Coach creating personalized interview",  # roadmap
+            "You are a senior career coach",
         ],
     ))
 

@@ -130,6 +130,34 @@ class JobSearchIntent(BaseModel):
     )
 
 
+# ── Career Roadmap ─────────────────────────────────────────────────────────────
+
+class LearningPhase(BaseModel):
+    timeframe: str = Field(description="e.g. 'Month 1-2'")
+    focus: str = Field(description="Main topic or skill to develop in this phase")
+    resources: list[str] = Field(
+        default_factory=list,
+        description="Specific courses, books, certifications, or projects"
+    )
+    milestone: str = Field(description="Measurable outcome to hit by end of this phase")
+
+
+class CareerRoadmap(BaseModel):
+    """Structured output from the roadmap synthesis step."""
+    current_state: str = Field(description="Summary of where the user is now — skills, experience, strengths")
+    target_state: str = Field(description="What the target role requires — skills, experience, expectations")
+    skill_gaps: list[str] = Field(description="Specific skills or experience the user is missing")
+    strengths: list[str] = Field(description="Existing skills that directly transfer to the target role")
+    learning_path: list[LearningPhase] = Field(description="Time-boxed phases with concrete resources")
+    application_strategy: str = Field(description="When and how to apply — timing, role progression, tips")
+    target_companies: list[str] = Field(
+        default_factory=list,
+        description="Specific companies or types of companies to target, drawn from job search results"
+    )
+    resume_tips: list[str] = Field(description="Specific ATS and content tips for this target role")
+    timeline_summary: str = Field(description="One-paragraph summary of the full timeline from now to hired")
+
+
 # ── Security Guard ─────────────────────────────────────────────────────────────
 
 class GuardCheckResult(BaseModel):
