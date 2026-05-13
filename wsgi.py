@@ -18,6 +18,8 @@ except ImportError:
     pass  # gevent not installed (e.g. during local dev with flask run)
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from factory import create_app
 
 env = os.getenv('FLASK_ENV', 'development')
