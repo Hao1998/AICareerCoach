@@ -61,11 +61,11 @@ class AgentScheduler:
 
         try:
             self.scheduler = _Scheduler(
-                daemon=True,  # Daemon thread exits when main program exits
+                daemon=True,
                 job_defaults={
-                    'coalesce': True,  # Combine missed runs
-                    'max_instances': 1  # Only one instance of each job at a time
-                }
+                    'coalesce': True,
+                    'max_instances': 1,
+                },
             )
 
             self.scheduler.start()

@@ -307,7 +307,7 @@ class JobScoutAgent:
 
             # Get user's learned preferences
             user_config = AgentConfig.query.filter_by(user_id=user_id).first()
-            user_preference_vector = user_config.preference_embedding if user_config else None
+            user_preference_vector = np.array(user_config.preference_embedding) if (user_config and user_config.preference_embedding is not None) else None
 
             # Track if we're using preference-based personalization
             using_preferences = user_preference_vector is not None
@@ -369,7 +369,7 @@ class JobScoutAgent:
 
                     # Hybrid scoring: 70% resume match + 30% preference match
                     if using_preferences and job.embedding is not None:
-                        preference_similarity = cosine_similarity(user_preference_vector, job.embedding)
+                        preference_similarity = cosine_similarity(user_preference_vector, np.array(job.embedding))
                         preference_score = float((preference_similarity + 1) * 50)
                         final_score = float(0.7 * base_match_score + 0.3 * preference_score)
                         print(f"Job {job.id}: Resume={base_match_score:.1f}, Pref={preference_score:.1f}, Final={final_score:.1f}")

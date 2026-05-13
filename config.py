@@ -16,15 +16,14 @@ class Config:
         'sqlite:///' + os.path.join(_PROJECT_ROOT, 'instance', 'career_coach.db')
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    # With gevent, many greenlets share one worker process. Increase pool size
-    # so they don't queue up waiting for a DB connection.
     SQLALCHEMY_ENGINE_OPTIONS = {
-        "pool_size": 20,
-        "max_overflow": 40,   # allow burst headroom up to 60 total connections
+        "pool_size": 10,
+        "max_overflow": 20,
         "pool_timeout": 30,
         "pool_recycle": 1800,
-        "pool_pre_ping": True,  # discard stale connections before use
+        "pool_pre_ping": True,
     }
+    REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
     # API Keys (optional for migrations)
     XAI_API_KEY = os.environ.get('XAI_API_KEY')

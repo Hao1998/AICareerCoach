@@ -15,6 +15,7 @@ from flask_login import login_required, current_user
 from sqlalchemy.orm import joinedload
 
 from models import db, AgentConfig, AgentRunHistory, JobMatch
+from jobs.fetchers.registry import USER_VISIBLE_SOURCES
 from services.db_lock import safe_commit
 from job_utils import update_user_preferences
 
@@ -131,6 +132,16 @@ def agent_config():
                 except (ValueError, TypeError):
                     pass
 
+            # Collect enabled sources from checkboxes (form sends one value per checked box)
+            if request.is_json:
+                selected_sources = data.get('enabled_sources', [])
+                if isinstance(selected_sources, str):
+                    selected_sources = [selected_sources]
+            else:
+                selected_sources = request.form.getlist('enabled_sources')
+            selected_sources = [s for s in selected_sources if s in USER_VISIBLE_SOURCES]
+            config.enabled_sources = selected_sources if selected_sources else ['adzuna']
+
             safe_commit()
 
             if schedule_changed or enabled_changed:
@@ -150,7 +161,8 @@ def agent_config():
                 flash(f'Error updating configuration: {str(e)}', 'error')
                 return redirect(url_for('agent.agent_dashboard'))
 
-    return render_template('agent_config.html', config=config, user=current_user)
+    return render_template('agent_config.html', config=config, user=current_user,
+                           available_sources=USER_VISIBLE_SOURCES)
 
 
 @agent_bp.route('/agent/history')

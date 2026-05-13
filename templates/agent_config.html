@@ -132,10 +132,45 @@
                 </div>
             </div>
 
+            <!-- Job Sources -->
+            <div class="border-t border-gray-200 pt-6 mt-6">
+                <h3 class="text-lg font-semibold text-gray-900 mb-1">Job Sources</h3>
+                <p class="text-sm text-gray-600 mb-4">Select which sources the agent should fetch jobs from. At least one must be enabled.</p>
+                {% set enabled = config.enabled_sources or ['adzuna'] %}
+                {% set source_meta = {
+                    'adzuna':    ('Adzuna', 'Large job board aggregator with broad coverage across industries and locations.'),
+                    'remotive':  ('Remotive', 'Curated remote-only jobs across tech, marketing, and more.'),
+                    'jobicy':    ('Jobicy', 'Remote job listings sourced directly from company career pages.'),
+                    'remoteok':  ('RemoteOK', 'Popular remote job board focused on tech and software roles.'),
+                    'himalayas': ('Himalayas', 'High-quality remote jobs with detailed company info.'),
+                    'themuse':   ('The Muse', 'Jobs with in-depth company culture profiles and career advice.'),
+                    'arbeitnow': ('Arbeitnow', 'European-focused job board with visa-sponsorship options.')
+                } %}
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {% for source in available_sources %}
+                    {% set label, desc = source_meta.get(source, (source, '')) %}
+                    <label class="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-blue-50 transition-colors
+                                  {% if source in enabled %}border-blue-400 bg-blue-50{% else %}border-gray-200 bg-white{% endif %}"
+                           id="label-{{ source }}">
+                        <input type="checkbox"
+                               name="enabled_sources"
+                               value="{{ source }}"
+                               {% if source in enabled %}checked{% endif %}
+                               class="mt-0.5 h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                               onchange="updateSourceLabel(this)">
+                        <div>
+                            <span class="block text-sm font-semibold text-gray-800">{{ label }}</span>
+                            <span class="block text-xs text-gray-500 mt-0.5">{{ desc }}</span>
+                        </div>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
             <!-- Job Fetching Preferences -->
             <div class="border-t border-gray-200 pt-6 mt-6">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4">Job Fetching Preferences</h3>
-                <p class="text-sm text-gray-600 mb-4">Configure how the agent searches for jobs on Adzuna</p>
+                <h3 class="text-lg font-semibold text-gray-900 mb-4">Adzuna Preferences</h3>
+                <p class="text-sm text-gray-600 mb-4">Configure how the agent searches for jobs on Adzuna (only applies when Adzuna is enabled)</p>
 
                 <div class="space-y-6">
                     <!-- Adzuna Location -->
@@ -241,6 +276,17 @@
 </style>
 
 <script>
+    function updateSourceLabel(checkbox) {
+        const label = document.getElementById('label-' + checkbox.value);
+        if (checkbox.checked) {
+            label.classList.add('border-blue-400', 'bg-blue-50');
+            label.classList.remove('border-gray-200', 'bg-white');
+        } else {
+            label.classList.remove('border-blue-400', 'bg-blue-50');
+            label.classList.add('border-gray-200', 'bg-white');
+        }
+    }
+
     // Auto-detect user's timezone and populate the hidden field
     document.addEventListener('DOMContentLoaded', function () {
         // Get the user's timezone using Intl API

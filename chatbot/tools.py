@@ -9,6 +9,7 @@ from background threads.
 import json
 import logging
 
+import numpy as np
 from langchain_core.tools import tool
 from sqlalchemy.orm import joinedload
 
@@ -143,7 +144,7 @@ def build_tools(app, user_id, progress_cb=None):
                 # ── 4. Hybrid scoring + intent soft-filter ────────────────────
                 _progress("Ranking matches…")
                 config = AgentConfig.query.filter_by(user_id=user_id).first()
-                preference_vector = config.preference_embedding if config else None
+                preference_vector = np.array(config.preference_embedding) if (config and config.preference_embedding is not None) else None
                 using_preferences = preference_vector is not None
 
                 scored = []
@@ -151,9 +152,8 @@ def build_tools(app, user_id, progress_cb=None):
                     job = m['job']
                     base_score = m['analysis'].get('match_score', 0)
 
-                    # 70/30 resume + preference hybrid (unchanged)
                     if using_preferences and job.embedding is not None:
-                        pref_similarity = cosine_similarity(preference_vector, job.embedding)
+                        pref_similarity = cosine_similarity(preference_vector, np.array(job.embedding))
                         pref_score = (pref_similarity + 1) * 50
                         hybrid_score = 0.7 * base_score + 0.3 * pref_score
                     else:
@@ -453,12 +453,14 @@ def build_tools(app, user_id, progress_cb=None):
     @tool
     def create_career_plan(goal: str) -> str:
         """Create a multi-step career plan for a complex goal. Use this when the user asks for help with a big career objective that requires multiple actions — like transitioning to a new role, preparing for interviews at a specific company, or building a career roadmap. Do NOT use this for simple questions or single-step tasks. The goal parameter should be a clear description of what the user wants to achieve."""
+        import threading
         with app.app_context():
-            from chatbot.planner import run_plan, get_active_plan
+            from chatbot.planner import generate_plan, execute_plan, get_active_plan, format_plan_status
+            from services.llm_service import get_llm
+            from models import PlanStep
 
             existing = get_active_plan(user_id)
             if existing:
-                from chatbot.planner import format_plan_status
                 return json.dumps({
                     "success": False,
                     "error": "You already have an active plan. Complete or abandon it first.",
@@ -466,9 +468,47 @@ def build_tools(app, user_id, progress_cb=None):
                 })
 
             try:
-                _progress("Planning your career strategy...")
-                result = run_plan(app, user_id, goal, progress_cb=_progress)
-                return json.dumps({"success": True, **result})
+                _progress("Creating your career plan...")
+                llm = get_llm()
+                # generate_plan is fast (one LLM call) — run it synchronously so
+                # we can return the plan outline to the user immediately.
+                plan = generate_plan(app, user_id, goal, llm)
+
+                # Execute the steps in a background thread so the HTTP request
+                # is not blocked by the full Plan → Execute → Replan loop.
+                _plan_id = plan.id  # capture plain int — don't close over the ORM object
+
+                def _bg_execute(pid=_plan_id):
+                    import traceback as _tb
+                    logger.info("[create_career_plan] BG thread started for plan %d", pid)
+                    try:
+                        execute_plan(app, user_id, pid)
+                        logger.info("[create_career_plan] BG thread finished for plan %d", pid)
+                    except Exception as bg_exc:
+                        logger.error(
+                            "[create_career_plan] BG thread CRASHED for plan %d:\n%s",
+                            pid, _tb.format_exc(),
+                        )
+
+                t = threading.Thread(target=_bg_execute, daemon=True, name=f"plan-{_plan_id}")
+                t.start()
+                logger.info("[create_career_plan] Background thread %s launched for plan %d", t.name, _plan_id)
+
+                steps = PlanStep.query.filter_by(plan_id=plan.id).order_by(PlanStep.step_order).all()
+                return json.dumps({
+                    "success": True,
+                    "plan_id": plan.id,
+                    "goal": plan.goal,
+                    "status": "running",
+                    "message": (
+                        "Your plan has been created and is now executing autonomously in the background. "
+                        "Use get_career_plan_status to check progress at any time."
+                    ),
+                    "steps": [
+                        {"step_order": s.step_order, "description": s.description, "status": s.status}
+                        for s in steps
+                    ],
+                })
             except Exception as e:
                 logger.error("create_career_plan error: %s", e)
                 return json.dumps({"success": False, "error": str(e)})
@@ -477,31 +517,50 @@ def build_tools(app, user_id, progress_cb=None):
     def get_career_plan_status(dummy: str = "") -> str:
         """Check the status of the user's current career plan. Use this when the user asks about their plan progress, what steps have been completed, or what's next."""
         with app.app_context():
-            from chatbot.planner import get_active_plan, format_plan_status
-            from models import TaskPlan
+            from chatbot.planner import get_active_plan, format_plan_status, SYNTHESIS_MARKER
+            from models import TaskPlan, PlanStep
 
-            plan = get_active_plan(user_id)
+            # Check active plan first, then fall back to most recent regardless of status
+            plan = get_active_plan(user_id) or (
+                TaskPlan.query
+                .filter_by(user_id=user_id)
+                .order_by(TaskPlan.created_at.desc())
+                .first()
+            )
+
             if not plan:
-                last_plan = (TaskPlan.query
-                             .filter_by(user_id=user_id)
-                             .order_by(TaskPlan.created_at.desc())
-                             .first())
-                if last_plan:
-                    return json.dumps({
-                        "success": True,
-                        "has_plan": False,
-                        "message": f"Your last plan ('{last_plan.goal}') was {last_plan.status}. You can create a new one.",
-                    })
                 return json.dumps({
                     "success": True,
                     "has_plan": False,
                     "message": "No career plan found. Ask me to create one with a specific goal!",
                 })
 
+            # Check if the synthesis (roadmap) step is done
+            synthesis_step = (PlanStep.query
+                              .filter_by(plan_id=plan.id, status='done')
+                              .filter(PlanStep.description.startswith(SYNTHESIS_MARKER))
+                              .first())
+
+            roadmap = synthesis_step.result_summary if synthesis_step else None
+
+            # Count progress
+            all_steps = PlanStep.query.filter_by(plan_id=plan.id).all()
+            done = sum(1 for s in all_steps if s.status == 'done')
+            total = len(all_steps)
+            still_running = any(s.status in ('pending', 'running') for s in all_steps)
+
             return json.dumps({
                 "success": True,
                 "has_plan": True,
-                "plan": format_plan_status(plan),
+                "status": plan.status,
+                "goal": plan.goal,
+                "progress": f"{done}/{total} steps completed",
+                "roadmap_ready": roadmap is not None,
+                # If roadmap is done, surface it directly so the LLM can present it.
+                # If still running, show step-by-step progress instead.
+                "roadmap": roadmap if roadmap else None,
+                "plan_progress": None if roadmap else format_plan_status(plan),
+                "still_running": still_running,
             })
 
     @tool

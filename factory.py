@@ -34,7 +34,11 @@ def _rate_limit_key():
     return get_remote_address()
 
 
-limiter = Limiter(key_func=_rate_limit_key, default_limits=[])
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    default_limits=[],
+    storage_uri=os.environ.get('REDIS_URL', 'memory://'),
+)
 
 
 def create_app(config_name='default', skip_api_check=False):
@@ -65,6 +69,7 @@ def create_app(config_name='default', skip_api_check=False):
             "You are the Job Analyst Agent",       # JobAnalystAgent system prompt
             "You are the Resume Tailoring Agent",  # ResumeTailoringAgent system prompt
             "Role: You are an AI Career Coach creating personalized interview",  # roadmap
+            "You are a senior career coach",
         ],
     ))
 
@@ -117,6 +122,46 @@ def create_app(config_name='default', skip_api_check=False):
         utc_dt = dt.replace(tzinfo=ZoneInfo('UTC'))
         local_dt = utc_dt.astimezone(ZoneInfo(timezone))
         return local_dt.strftime(fmt)
+
+    # ── Health checks ─────────────────────────────────────────────────────────
+    @app.route('/health')
+    def health():
+        from sqlalchemy import text
+        from services.redis_client import get_redis
+        status = {"status": "healthy", "db": False, "redis": False}
+        code = 200
+        try:
+            db.session.execute(text("SELECT 1"))
+            status["db"] = True
+        except Exception:
+            code = 503
+        try:
+            get_redis().ping()
+            status["redis"] = True
+        except Exception:
+            code = 503
+        status["status"] = "healthy" if code == 200 else "degraded"
+        return jsonify(status), code
+
+    @app.route('/ready')
+    def ready():
+        from sqlalchemy import text
+        from services.redis_client import get_redis
+        checks = {"db": False, "redis": False, "scheduler": False}
+        try:
+            db.session.execute(text("SELECT 1"))
+            checks["db"] = True
+        except Exception:
+            pass
+        try:
+            get_redis().ping()
+            checks["redis"] = True
+        except Exception:
+            pass
+        scheduler = app.extensions.get('scheduler')
+        checks["scheduler"] = scheduler.is_running() if scheduler else False
+        all_ok = all(checks.values())
+        return jsonify({"status": "ready" if all_ok else "not_ready", **checks}), 200 if all_ok else 503
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
     if not skip_api_check:

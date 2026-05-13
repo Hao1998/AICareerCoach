@@ -27,30 +27,23 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 
 # ── Concurrent-stream guard ───────────────────────────────────────────────────
-# Tracks which user_ids currently have a stream in flight. Prevents abuse
-# (one user holding many concurrent streams), accidental double-clicks on the
-# Send button, and runaway costs.
-#
-# In production with multiple chat pods, replace this dict with Redis SETNX +
-# TTL. For a single-pod deployment, the in-process dict is fine.
-import threading
-_active_streams: set[int] = set()
-_active_streams_lock = threading.Lock()
-
+# Uses Redis SETNX with a 5-minute TTL so slots auto-expire if a process
+# crashes. Works across multiple workers/pods.
 
 def acquire_stream_slot(user_id: int) -> bool:
     """Try to mark a stream as active for this user. Returns False if already streaming."""
-    with _active_streams_lock:
-        if user_id in _active_streams:
-            return False
-        _active_streams.add(user_id)
-        return True
+    from services.redis_client import get_redis
+    r = get_redis()
+    key = f"stream:active:{user_id}"
+    acquired = r.set(key, "1", nx=True, ex=300)
+    return bool(acquired)
 
 
 def release_stream_slot(user_id: int) -> None:
     """Mark the user's stream as finished."""
-    with _active_streams_lock:
-        _active_streams.discard(user_id)
+    from services.redis_client import get_redis
+    r = get_redis()
+    r.delete(f"stream:active:{user_id}")
 
 
 # ── Tool label map ────────────────────────────────────────────────────────────
