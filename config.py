@@ -45,6 +45,10 @@ class Config:
         os.path.join(_PROJECT_ROOT, 'instance', 'checkpoints.db')
     )
 
+    # Observability (all opt-in via env vars)
+    OTEL_EXPORTER_ENDPOINT = os.environ.get('OTEL_EXPORTER_ENDPOINT')  # e.g. http://localhost:4317
+    SENTRY_DSN = os.environ.get('SENTRY_DSN')
+
 class DevelopmentConfig(Config):
     """Development configuration"""
     DEBUG = True

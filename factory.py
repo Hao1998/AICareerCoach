@@ -8,10 +8,11 @@ Creates and configures the Flask application.
 - Starts the scheduler
 """
 
+import hashlib
 import json
 import os
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, url_for
 from flask_login import LoginManager, current_user
 from flask_migrate import Migrate
 from flask_limiter import Limiter
@@ -19,12 +20,15 @@ from flask_limiter.util import get_remote_address
 from langchain_core.globals import set_llm_cache
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
+from flask_socketio import SocketIO
+
 from models import db, User
 from config import config
 from services.semantic_cache import SemanticCache
 
 login_manager = LoginManager()
 migrate = Migrate()
+socketio = SocketIO()
 
 
 def _rate_limit_key():
@@ -73,11 +77,29 @@ def create_app(config_name='default', skip_api_check=False):
         ],
     ))
 
+    # ── Observability ─────────────────────────────────────────────────────────
+    from services.logging_config import configure_logging
+    from services.telemetry import init_request_id, init_telemetry, init_sentry
+
+    configure_logging(app)
+    init_request_id(app)
+    init_telemetry(app)
+    init_sentry(app)
+
     # ── Extensions ────────────────────────────────────────────────────────────
     db.init_app(app)
     migrate.init_app(app, db)
     login_manager.init_app(app)
     limiter.init_app(app)
+    # message_queue is only needed for multi-worker gunicorn (routes SocketIO
+    # events through Redis so all workers see them). For single-process dev
+    # (python app.py) it causes a startup deadlock — skip it in development.
+    _mq = None if config_name == 'development' else app.config.get('REDIS_URL')
+    socketio.init_app(app,
+        cors_allowed_origins="*",
+        async_mode='gevent',
+        message_queue=_mq,
+    )
 
     login_manager.login_view = 'auth.login'
     login_manager.login_message = 'Please log in to access this page.'
@@ -104,6 +126,8 @@ def create_app(config_name='default', skip_api_check=False):
     app.register_blueprint(agent_bp)
     app.register_blueprint(chat_bp)
 
+    import controllers.ws_chat_controller  # noqa: F401 — registers SocketIO events
+
     # ── Template Filters ──────────────────────────────────────────────────────
     @app.template_filter('from_json')
     def from_json_filter(value):
@@ -123,6 +147,26 @@ def create_app(config_name='default', skip_api_check=False):
         local_dt = utc_dt.astimezone(ZoneInfo(timezone))
         return local_dt.strftime(fmt)
 
+    # ── Static asset cache-busting ─────────────────────────────────────────
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000
+
+    @app.context_processor
+    def asset_hash():
+        _cache = {}
+        def hashed_url(filename):
+            if filename in _cache:
+                return _cache[filename]
+            filepath = os.path.join(app.static_folder, filename)
+            try:
+                with open(filepath, 'rb') as f:
+                    h = hashlib.md5(f.read()).hexdigest()[:8]
+                result = url_for('static', filename=filename) + '?v=' + h
+            except FileNotFoundError:
+                result = url_for('static', filename=filename)
+            _cache[filename] = result
+            return result
+        return {'hashed_url': hashed_url}
+
     # ── Health checks ─────────────────────────────────────────────────────────
     @app.route('/health')
     def health():
@@ -135,6 +179,8 @@ def create_app(config_name='default', skip_api_check=False):
             status["db"] = True
         except Exception:
             code = 503
+
+
         try:
             get_redis().ping()
             status["redis"] = True
