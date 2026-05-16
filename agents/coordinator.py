@@ -29,7 +29,7 @@ def _get_or_create(app, extension_key: str, agent_class):
     """Return a cached agent instance, creating it on first access."""
     from flask import current_app
     if app is None:
-        app = current_app._get_current_object()
+        app = current_app._get_current_object()  # type: ignore[attr-defined]
     if not hasattr(app, "extensions"):
         app.extensions = {}
     if extension_key not in app.extensions:

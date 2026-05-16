@@ -23,7 +23,7 @@ class TheMuseFetcher(BaseJobFetcher):
     BASE_URL = "https://www.themuse.com/api/public/jobs"
 
     def fetch_jobs(self, keywords=None, location=None, max_jobs=50, **kwargs) -> list[dict]:
-        all_jobs = []
+        all_jobs: list[dict] = []
         page = 0
 
         while len(all_jobs) < max_jobs:

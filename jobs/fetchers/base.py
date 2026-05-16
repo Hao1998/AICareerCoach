@@ -8,6 +8,7 @@ store/dedup/embed/index logic lives here so every source gets it for free.
 import time
 import logging
 from abc import ABC, abstractmethod
+from typing import TypedDict
 
 import requests
 
@@ -16,6 +17,14 @@ from services.db_lock import safe_commit
 from jobs.utils import compute_job_embedding, build_job_faiss_index
 
 logger = logging.getLogger(__name__)
+
+
+class FetchStats(TypedDict):
+    fetched: int
+    stored: int
+    duplicates: int
+    errors: int
+    error_messages: list[str]
 
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 2
@@ -79,8 +88,8 @@ class BaseJobFetcher(ABC):
         """
 
     def fetch_and_store_jobs(self, keywords=None, location=None,
-                             max_jobs=50, skip_duplicates=True, **kwargs) -> dict:
-        stats = {
+                             max_jobs=50, skip_duplicates=True, **kwargs) -> FetchStats:
+        stats: FetchStats = {
             'fetched': 0,
             'stored': 0,
             'duplicates': 0,

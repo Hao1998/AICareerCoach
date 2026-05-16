@@ -242,7 +242,7 @@ def build_tools(app, user_id, progress_cb=None):
         with app.app_context():
             try:
                 matches = (JobMatch.query
-                           .options(joinedload(JobMatch.job))
+                           .options(joinedload(JobMatch.job))  # type: ignore[arg-type]
                            .filter_by(user_id=user_id)
                            .order_by(JobMatch.created_at.desc())
                            .limit(limit).all())

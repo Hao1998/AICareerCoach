@@ -35,7 +35,7 @@ class GreenhouseFetcher(BaseJobFetcher):
         if not board_tokens:
             return []
 
-        all_jobs = []
+        all_jobs: list[dict] = []
         for token in board_tokens:
             if len(all_jobs) >= max_jobs:
                 break

@@ -44,3 +44,7 @@ job_vector_index/
 
 # Environment variables
 .env
+
+# Frontend build
+node_modules/
+static/css/app.css

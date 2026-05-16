@@ -10,6 +10,7 @@ import logging
 from abc import ABC, abstractmethod
 from langchain_xai import ChatXAI
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import SecretStr
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class BaseAgent(ABC):
         """Agent identity and scope. Keep it narrowly focused on one task."""
 
     def __init__(self, api_key: str):
-        self.llm = ChatXAI(model=self.MODEL, temperature=0, api_key=api_key)
+        self.llm = ChatXAI(model=self.MODEL, temperature=0, api_key=SecretStr(api_key))
         self._prompt = ChatPromptTemplate.from_messages([
             ("system", self.SYSTEM_PROMPT),
             ("human", "{input}"),

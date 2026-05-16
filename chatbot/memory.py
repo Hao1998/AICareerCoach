@@ -202,7 +202,7 @@ Return ONLY the JSON array, no explanation."""
 
 
 def index_session_memories(app, user_id: int, messages: list, llm, session_date: datetime,
-                           summary: str = None):
+                           summary: str | None = None):
     """Embed and store session summary + discrete facts as UserMemoryChunk rows."""
     from job_utils import embeddings as hf_embeddings
 

@@ -23,7 +23,7 @@ class ArbeitnowFetcher(BaseJobFetcher):
     BASE_URL = "https://arbeitnow.com/api/job-board-api"
 
     def fetch_jobs(self, keywords=None, location=None, max_jobs=50, **kwargs) -> list[dict]:
-        all_jobs = []
+        all_jobs: list[dict] = []
         page = 1
 
         while len(all_jobs) < max_jobs:

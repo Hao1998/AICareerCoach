@@ -1,6 +1,7 @@
 import json
 import time
 import threading
+from typing import Any
 import numpy as np
 from langchain_core.caches import BaseCache
 
@@ -8,12 +9,12 @@ from langchain_core.caches import BaseCache
 class SemanticCache(BaseCache):
     def __init__(self, embedding_model, score_threshold: float = 0.90,
                  max_size: int = 500, ttl_seconds: int = 3600,
-                 bypass_prefixes: list = None):
+                 bypass_prefixes: list[Any] | None = None):
         self._embed = embedding_model
         self._threshold = score_threshold
         self._max_size = max_size
         self._ttl = ttl_seconds
-        self._store = []  # list of (vector, llm_string, response, expires_at)
+        self._store: list[tuple] = []  # list of (vector, llm_string, response, expires_at)
         self._lock = threading.Lock()
         self._bypass_prefixes = tuple(bypass_prefixes or [])
 

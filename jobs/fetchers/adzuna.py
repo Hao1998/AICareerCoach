@@ -27,7 +27,7 @@ class AdzunaJobFetcher(BaseJobFetcher):
         max_days_old = kwargs.get('max_days_old', 30)
         results_per_page = min(max_jobs, 50)
         pages_needed = (max_jobs + results_per_page - 1) // results_per_page
-        all_jobs = []
+        all_jobs: list[dict] = []
 
         for page in range(1, pages_needed + 1):
             if len(all_jobs) >= max_jobs:
