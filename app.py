@@ -8,7 +8,7 @@ Run migrations with:         flask db migrate  (uses wsgi.py / factory pattern)
 import os
 from dotenv import load_dotenv
 load_dotenv()
-from factory import create_app
+from factory import create_app, socketio
 from job_utils import build_job_faiss_index, JOB_VECTOR_INDEX
 
 env = os.getenv('FLASK_ENV', 'development')
@@ -25,4 +25,7 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Warning: Could not build job index on startup: {e}")
 
-    app.run(host='0.0.0.0', port=5001, debug=(env == 'development'))
+    # use_reloader=False: gevent monkey-patching is incompatible with werkzeug's
+    # fork-based reloader. Restart manually after code changes in dev.
+    socketio.run(app, host='0.0.0.0', port=5001, debug=(env == 'development'),
+                 use_reloader=False, log_output=True)

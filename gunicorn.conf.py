@@ -1,21 +1,20 @@
 """
 Gunicorn configuration for production deployment.
 
-Uses gevent workers so each SSE stream is a lightweight coroutine instead of
-an OS thread — allowing thousands of concurrent streams per instance with
-minimal memory overhead.
+Uses gevent-websocket workers so WebSocket connections and streaming responses
+are lightweight coroutines — allowing thousands of concurrent connections per
+instance with minimal memory overhead.
 """
 
 import multiprocessing
 
 # ── Workers ───────────────────────────────────────────────────────────────────
-worker_class = "gevent"
+worker_class = "geventwebsocket.gunicorn.workers.GeventWebSocketWorker"
 workers = multiprocessing.cpu_count() * 2 + 1
 worker_connections = 1000       # max concurrent greenlets per worker
 
 # ── Timeouts ──────────────────────────────────────────────────────────────────
-# SSE streams stay open for the full LLM response duration (can be 30-60s).
-# Default gunicorn timeout (30s) would kill mid-stream responses.
+# WebSocket/streaming responses can run 30-60s for LLM completions.
 timeout = 300
 keepalive = 5
 

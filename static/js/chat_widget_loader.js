@@ -23,17 +23,28 @@
         root.innerHTML = html;
         document.body.appendChild(root);
 
-        // Re-execute inline scripts (innerHTML doesn't execute scripts)
-        var scripts = root.querySelectorAll('script');
-        scripts.forEach(function(oldScript) {
+        // Re-execute scripts in order: load external scripts first, then inline.
+        // forEach fires all at once — external scripts load async so inline runs
+        // before io() is defined. Instead, chain them sequentially.
+        var scripts = Array.from(root.querySelectorAll('script'));
+
+        function runNext(i) {
+            if (i >= scripts.length) return;
+            var oldScript = scripts[i];
             var newScript = document.createElement('script');
             if (oldScript.src) {
                 newScript.src = oldScript.src;
+                newScript.onload = function() { runNext(i + 1); };
+                newScript.onerror = function() { runNext(i + 1); };
+                oldScript.parentNode.replaceChild(newScript, oldScript);
             } else {
                 newScript.textContent = oldScript.textContent;
+                oldScript.parentNode.replaceChild(newScript, oldScript);
+                runNext(i + 1);
             }
-            oldScript.parentNode.replaceChild(newScript, oldScript);
-        });
+        }
+
+        runNext(0);
     } catch (e) {
         console.error('Failed to load chat widget:', e);
     }

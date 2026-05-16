@@ -4,8 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Resume Evaluation</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/framer-motion/dist/framer-motion.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 </head>
 <body class="min-h-screen bg-white ">
     <nav class="bg-white shadow-lg">
@@ -31,7 +30,7 @@
 <main class=" max-w-7xl mx-auto min-h-screen flex  items-center  ">
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 p-4 lg:p-8">
         <!-- Left Content -->
-        <div class="flex flex-col justify-start space-y-6" id="content">
+        <div class="flex flex-col justify-start space-y-6 animate-slide-up" id="content">
             <div class=" items-end text-xm font-bold  text-blue-500">
                 <img src="https://res.cloudinary.com/dtsuvx8dz/image/upload/v1706986565/hqatxpsjdg3zeql20jfe.png"
                      class="" alt="zeplogo"/>
@@ -136,17 +135,6 @@
 </main>
 
 <script>
-    // Simple animation with Framer Motion
-    const content = document.getElementById('content');
-    content.style.opacity = '0';
-    content.style.transform = 'translateY(20px)';
-
-    window.addEventListener('load', () => {
-        content.style.transition = 'all 0.8s ease-out';
-        content.style.opacity = '1';
-        content.style.transform = 'translateY(0)';
-    });
-
     // Check if user has already uploaded a resume (check if vector index exists)
     async function checkResumeStatus() {
         try {

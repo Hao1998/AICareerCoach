@@ -16,8 +16,6 @@ import logging
 import os
 import pytz
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

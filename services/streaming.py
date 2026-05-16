@@ -22,6 +22,7 @@ Event types pushed onto the queue:
 from __future__ import annotations
 
 import queue
+import threading
 from typing import Any
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -104,4 +105,49 @@ class TokenStreamHandler(BaseCallbackHandler):
     @property
     def captured_text(self) -> str:
         """The full assistant response after streaming is done."""
+        return "".join(self._captured_text)
+
+
+class WebSocketStreamHandler(BaseCallbackHandler):
+    """LangChain callback that emits events via Socket.IO with cancel support."""
+
+    def __init__(self, room: str, cancel_event: threading.Event):
+        super().__init__()
+        self.room = room
+        self._cancel_event = cancel_event
+        self._captured_text: list[str] = []
+        self._current_tool: str | None = None
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        if self._cancel_event.is_set():
+            raise KeyboardInterrupt("User cancelled")
+        if token:
+            self._captured_text.append(token)
+            from factory import socketio
+            socketio.emit('token', {'content': token}, room=self.room)
+
+    def push_progress(self, label: str) -> None:
+        from factory import socketio
+        socketio.emit('progress', {'label': label}, room=self.room)
+
+    def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
+        if self._cancel_event.is_set():
+            raise KeyboardInterrupt("User cancelled")
+        name = (serialized or {}).get("name", "tool")
+        self._current_tool = name
+        label = _TOOL_LABELS.get(name, f"Running {name}...")
+        from factory import socketio
+        socketio.emit('tool_start', {'tool': name, 'label': label}, room=self.room)
+
+    def on_tool_end(self, output: Any, **kwargs: Any) -> None:
+        from factory import socketio
+        socketio.emit('tool_end', {'tool': self._current_tool or ''}, room=self.room)
+        self._current_tool = None
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        from factory import socketio
+        socketio.emit('error', {'error': str(error)}, room=self.room)
+
+    @property
+    def captured_text(self) -> str:
         return "".join(self._captured_text)

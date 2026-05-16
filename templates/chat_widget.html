@@ -243,6 +243,9 @@
     <div class="chat-char-count" id="chat-char-count"></div>
     <div class="chat-input-area">
         <textarea id="chat-input" placeholder="Ask me anything..." rows="1" maxlength="2000"></textarea>
+        <button id="chat-cancel-btn" aria-label="Stop generating" style="display:none;background:#ef4444;color:white;border:none;width:36px;height:36px;border-radius:10px;cursor:pointer;flex-shrink:0;">
+            <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
         <button id="chat-send-btn" disabled aria-label="Send message">
             <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -252,6 +255,7 @@
     </div>
 </div>
 
+<script src="/static/js/socket.io.min.js"></script>
 <script>
 (function() {
     const bubbleBtn = document.getElementById('chat-bubble-btn');
@@ -262,11 +266,17 @@
     const typingEl = document.getElementById('chat-typing');
     const inputEl = document.getElementById('chat-input');
     const sendBtn = document.getElementById('chat-send-btn');
+    const cancelBtn = document.getElementById('chat-cancel-btn');
     const clearBtn = document.getElementById('chat-clear-btn');
     const charCountEl = document.getElementById('chat-char-count');
 
     let isOpen = false;
     let historyLoaded = false;
+    let isStreaming = false;
+    let replyDiv = null;
+    let replyText = '';
+
+    const socket = io({ autoConnect: false });
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -316,12 +326,87 @@
         }
     }
 
+    function ensureReplyDiv() {
+        if (replyDiv) return replyDiv;
+        typingEl.style.display = 'none';
+        replyDiv = document.createElement('div');
+        replyDiv.className = 'chat-msg assistant';
+        messagesEl.appendChild(replyDiv);
+        return replyDiv;
+    }
+
+    function setStreaming(active) {
+        isStreaming = active;
+        cancelBtn.style.display = active ? 'flex' : 'none';
+        sendBtn.style.display = active ? 'none' : 'flex';
+        if (!active) {
+            sendBtn.disabled = !inputEl.value.trim();
+        }
+    }
+
+    function finishStream() {
+        typingEl.style.display = 'none';
+        setStreaming(false);
+        replyDiv = null;
+        replyText = '';
+    }
+
+    // Socket.IO event handlers
+    socket.on('token', function(data) {
+        ensureReplyDiv();
+        replyText += data.content;
+        replyDiv.innerHTML = formatContent(replyText);
+        scrollToBottom();
+    });
+
+    socket.on('tool_start', function(data) {
+        ensureReplyDiv();
+        var label = data.label || ('Running ' + data.tool + '…');
+        var statusHtml = '<div class="chat-tool-status"><span class="chat-tool-spinner"></span>' + label + '</div>';
+        replyDiv.innerHTML = (replyText ? formatContent(replyText) : '') + statusHtml;
+        scrollToBottom();
+    });
+
+    socket.on('progress', function(data) {
+        ensureReplyDiv();
+        var statusHtml = '<div class="chat-tool-status"><span class="chat-tool-spinner"></span>' + data.label + '</div>';
+        replyDiv.innerHTML = (replyText ? formatContent(replyText) : '') + statusHtml;
+        scrollToBottom();
+    });
+
+    socket.on('tool_end', function() {
+        if (replyDiv && !replyText) {
+            replyDiv.innerHTML = '';
+        }
+    });
+
+    socket.on('done', function(data) {
+        ensureReplyDiv();
+        if (!replyText) replyText = '(no response)';
+        replyDiv.innerHTML = formatContent(replyText);
+        attachActionButtons(replyDiv, data.intent, data.action_data);
+        scrollToBottom();
+        finishStream();
+    });
+
+    socket.on('error', function(data) {
+        ensureReplyDiv();
+        replyDiv.innerHTML = formatContent('Sorry, I hit an error: ' + (data.error || 'unknown'));
+        finishStream();
+    });
+
+    socket.on('connect_error', function() {
+        if (isStreaming) {
+            appendMessage('assistant', 'Connection lost. Please try again.');
+            finishStream();
+        }
+    });
+
     function loadHistory() {
         fetch('/api/chat/history')
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data.messages && data.messages.length > 0) {
-                    // Clear default welcome message
                     messagesEl.innerHTML = '';
                     data.messages.forEach(function(msg) {
                         appendMessage(msg.role, msg.content, msg.intent, msg.action_data);
@@ -341,6 +426,7 @@
             panel.classList.add('open');
             iconOpen.style.display = 'none';
             iconClose.style.display = 'block';
+            if (!socket.connected) socket.connect();
             if (!historyLoaded) loadHistory();
             inputEl.focus();
         } else {
@@ -350,124 +436,31 @@
         }
     }
 
-    // Streaming send — consumes Server-Sent Events from /api/chat/stream.
-    // The reply div is created empty and tokens are appended as they arrive,
-    // giving the user a typewriter effect and freeing the request thread
-    // immediately after each chunk yields.
-    async function sendMessage() {
-        const text = inputEl.value.trim();
-        if (!text) return;
+    function sendMessage() {
+        var text = inputEl.value.trim();
+        if (!text || isStreaming) return;
 
         appendMessage('user', text);
         inputEl.value = '';
         inputEl.style.height = 'auto';
-        sendBtn.disabled = true;
         charCountEl.textContent = '';
 
+        replyDiv = null;
+        replyText = '';
+        setStreaming(true);
         typingEl.style.display = 'block';
         scrollToBottom();
 
-        // The assistant message div we'll fill with tokens.
-        let replyDiv = null;
-        let replyText = '';
+        if (!socket.connected) socket.connect();
+        socket.emit('chat_message', { message: text });
+    }
 
-        function ensureReplyDiv() {
-            if (replyDiv) return replyDiv;
-            typingEl.style.display = 'none';
-            replyDiv = document.createElement('div');
-            replyDiv.className = 'chat-msg assistant';
-            messagesEl.appendChild(replyDiv);
-            return replyDiv;
+    function cancelStream() {
+        socket.emit('cancel_stream');
+        if (replyDiv) {
+            replyDiv.remove();
         }
-
-        try {
-            const res = await fetch('/api/chat/stream', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text })
-            });
-
-            if (!res.ok) {
-                typingEl.style.display = 'none';
-                if (res.status === 409) {
-                    appendMessage('assistant', "Hold on — I'm still finishing your last message.");
-                } else if (res.status === 429) {
-                    appendMessage('assistant', 'You are sending messages too quickly. Please slow down.');
-                } else {
-                    const err = await res.json().catch(function() { return {}; });
-                    appendMessage('assistant', 'Sorry, something went wrong: ' + (err.error || res.statusText));
-                }
-                return;
-            }
-
-            // Read the SSE stream chunk by chunk.
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-
-                // SSE events are separated by a blank line.
-                const events = buffer.split('\n\n');
-                buffer = events.pop();   // last chunk may be incomplete
-
-                for (const raw of events) {
-                    // Skip comments (lines starting with ":") and other non-data lines.
-                    const dataLines = raw.split('\n').filter(function(l) {
-                        return l.startsWith('data: ');
-                    });
-                    if (dataLines.length === 0) continue;
-
-                    const payload = dataLines.map(function(l) { return l.slice(6); }).join('\n');
-                    let evt;
-                    try { evt = JSON.parse(payload); } catch (e) { continue; }
-
-                    if (evt.type === 'token') {
-                        ensureReplyDiv();
-                        replyText += evt.content;
-                        replyDiv.innerHTML = formatContent(replyText);
-                        scrollToBottom();
-                    } else if (evt.type === 'tool_start' || evt.type === 'progress') {
-                        ensureReplyDiv();
-                        const label = evt.label || (evt.tool ? 'Running ' + evt.tool + '…' : 'Working…');
-                        const statusHtml = '<div class="chat-tool-status"><span class="chat-tool-spinner"></span>' + label + '</div>';
-                        if (replyText) {
-                            replyDiv.innerHTML = formatContent(replyText) + statusHtml;
-                        } else {
-                            replyDiv.innerHTML = statusHtml;
-                        }
-                        scrollToBottom();
-                    } else if (evt.type === 'tool_end') {
-                        if (replyDiv && !replyText) {
-                            replyDiv.innerHTML = '';
-                        }
-                    } else if (evt.type === 'done') {
-                        ensureReplyDiv();
-                        if (!replyText) replyText = '(no response)';
-                        replyDiv.innerHTML = formatContent(replyText);
-                        attachActionButtons(replyDiv, evt.intent, evt.action_data);
-                        scrollToBottom();
-                    } else if (evt.type === 'error') {
-                        ensureReplyDiv();
-                        replyDiv.innerHTML = formatContent(
-                            'Sorry, I hit an error: ' + (evt.error || 'unknown')
-                        );
-                    }
-                }
-            }
-        } catch (err) {
-            typingEl.style.display = 'none';
-            console.error('Chat stream failed:', err);
-            if (!replyDiv) {
-                appendMessage('assistant', 'Sorry, I had trouble connecting. Please try again.');
-            }
-        } finally {
-            typingEl.style.display = 'none';
-            sendBtn.disabled = !inputEl.value.trim();
-        }
+        finishStream();
     }
 
     function clearHistory() {
@@ -482,18 +475,15 @@
             });
     }
 
-    // Event listeners
     bubbleBtn.addEventListener('click', togglePanel);
     clearBtn.addEventListener('click', clearHistory);
     sendBtn.addEventListener('click', sendMessage);
+    cancelBtn.addEventListener('click', cancelStream);
 
     inputEl.addEventListener('input', function() {
-        // Auto-resize
         this.style.height = 'auto';
         this.style.height = Math.min(this.scrollHeight, 80) + 'px';
-        // Enable/disable send
-        sendBtn.disabled = !this.value.trim();
-        // Char count
+        if (!isStreaming) sendBtn.disabled = !this.value.trim();
         var len = this.value.length;
         charCountEl.textContent = len > 0 ? len + '/2000' : '';
     });
@@ -501,7 +491,7 @@
     inputEl.addEventListener('keydown', function(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            if (inputEl.value.trim()) sendMessage();
+            if (inputEl.value.trim() && !isStreaming) sendMessage();
         }
     });
 })();
