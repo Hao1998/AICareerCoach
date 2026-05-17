@@ -7,16 +7,22 @@ from langchain_core.caches import BaseCache
 
 
 class SemanticCache(BaseCache):
-    def __init__(self, embedding_model, score_threshold: float = 0.90,
+    def __init__(self, embedding_model=None, score_threshold: float = 0.90,
                  max_size: int = 500, ttl_seconds: int = 3600,
                  bypass_prefixes: list[Any] | None = None):
-        self._embed = embedding_model
+        self._embed = embedding_model  # can be None; resolved lazily via _get_embed()
         self._threshold = score_threshold
         self._max_size = max_size
         self._ttl = ttl_seconds
         self._store: list[tuple] = []  # list of (vector, llm_string, response, expires_at)
         self._lock = threading.Lock()
         self._bypass_prefixes = tuple(bypass_prefixes or [])
+
+    def _get_embed(self):
+        if self._embed is None:
+            from job_utils import get_embeddings
+            self._embed = get_embeddings()
+        return self._embed
 
     @staticmethod
     def _extract_content(prompt: str) -> str:
@@ -50,7 +56,7 @@ class SemanticCache(BaseCache):
     def lookup(self, prompt: str, llm_string: str):
         if self._should_bypass(prompt):
             return None
-        query_vec = self._embed.embed_query(prompt)
+        query_vec = self._get_embed().embed_query(prompt)
         with self._lock:
             self._purge_expired()
             for stored_vec, stored_llm, response, _ in self._store:
@@ -63,7 +69,7 @@ class SemanticCache(BaseCache):
     def update(self, prompt: str, llm_string: str, return_val) -> None:
         if self._should_bypass(prompt):
             return
-        vec = self._embed.embed_query(prompt)
+        vec = self._get_embed().embed_query(prompt)
         expires_at = time.time() + self._ttl
         with self._lock:
             self._purge_expired()

@@ -5,9 +5,36 @@ Provides lazy-initialized LLM instance and all LangChain chains used across the 
 No Flask routes here — pure business logic.
 """
 
+import logging
+
 from langchain_core.prompts import PromptTemplate
 from langchain_classic.chains import LLMChain
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from openai import RateLimitError, APITimeoutError, APIConnectionError, InternalServerError
 from schemas.output_schemas import JobMatchResult, KeywordExtractionResult, ResumeTailoringResult
+
+logger = logging.getLogger(__name__)
+
+RETRYABLE_ERRORS = (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(RETRYABLE_ERRORS),
+    before_sleep=lambda retry_state: logger.warning(
+        "Retrying chain (attempt %d) after %s",
+        retry_state.attempt_number,
+        retry_state.outcome.exception()
+    ),
+)
+def invoke_chain_with_retry(chain, **kwargs):
+    """Invoke a LangChain chain with automatic retry on transient API errors.
+    Returns the text output (equivalent to chain.run())."""
+    result = chain.invoke(kwargs)
+    if isinstance(result, dict):
+        return result.get("text", result)
+    return result
 
 
 def get_llm(app=None):
@@ -28,7 +55,8 @@ def get_llm(app=None):
         app.extensions['llm'] = ChatXAI(
             model="grok-3",
             temperature=0,
-            api_key=api_key
+            api_key=api_key,
+            request_timeout=120,
         )
 
     return app.extensions['llm']
@@ -60,7 +88,8 @@ def get_streaming_llm(app=None):
             model="grok-3",
             temperature=0,
             api_key=api_key,
-            streaming=True,   # ← emits on_llm_new_token per chunk
+            streaming=True,
+            request_timeout=120,
         )
 
     return app.extensions['llm_streaming']

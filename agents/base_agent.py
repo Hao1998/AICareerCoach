@@ -11,8 +11,12 @@ from abc import ABC, abstractmethod
 from langchain_xai import ChatXAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import SecretStr
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from openai import RateLimitError, APITimeoutError, APIConnectionError, InternalServerError
 
 logger = logging.getLogger(__name__)
+
+RETRYABLE_ERRORS = (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
 
 
 class BaseAgent(ABC):
@@ -55,4 +59,18 @@ class BaseAgent(ABC):
     def _invoke_structured(self, schema_class, input_text: str):
         """Format prompt → call structured LLM → return typed Pydantic object."""
         chain = self._prompt | self.llm.with_structured_output(schema_class)
+        return self._invoke_with_retry(chain, input_text)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(RETRYABLE_ERRORS),
+        before_sleep=lambda retry_state: logger.warning(
+            "Retrying %s (attempt %d) after %s",
+            retry_state.fn.__name__,
+            retry_state.attempt_number,
+            retry_state.outcome.exception()
+        ),
+    )
+    def _invoke_with_retry(self, chain, input_text: str):
         return chain.invoke({"input": input_text})

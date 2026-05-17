@@ -33,6 +33,7 @@ langgraph-checkpoint-sqlite>=2.0.0
 langgraph-checkpoint-postgres>=2.0.0
 psycopg[binary]>=3.1.0
 redis>=5.0.0
+tenacity>=8.2.0
 
 # WebSocket
 flask-socketio>=5.3.0

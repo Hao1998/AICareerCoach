@@ -8,11 +8,13 @@ No Flask routes here — pure business logic.
 """
 
 import logging
+import os
+
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
-from job_utils import embeddings, get_job_faiss_index, get_bm25_index, tokenize_for_bm25
+from job_utils import get_embeddings, get_job_faiss_index, get_bm25_index, tokenize_for_bm25
 from job_fetcher import fetch_jobs_from_adzuna
 from jobs.fetchers.registry import fetch_from_sources
 
@@ -31,7 +33,7 @@ from services.llm_service import run_job_matching
 
 logger = logging.getLogger(__name__)
 
-_LLM_CONCURRENCY = 5
+_LLM_CONCURRENCY = int(os.environ.get('LLM_CONCURRENCY', '5'))
 
 
 def _reciprocal_rank_fusion(
@@ -67,12 +69,12 @@ def find_matching_jobs_old(resume_text, top_k=5):
     if not jobs:
         return []
 
-    resume_embedding = _run_in_thread(embeddings.embed_query, resume_text)
+    resume_embedding = _run_in_thread(get_embeddings().embed_query, resume_text)
 
     matches = []
     for job in jobs:
         job_text = f"{job.title} {job.description} {job.requirements or ''}"
-        job_embedding = _run_in_thread(embeddings.embed_query, job_text)
+        job_embedding = _run_in_thread(get_embeddings().embed_query, job_text)
         similarity_score = calculate_embedding_similarity(resume_embedding, job_embedding)
 
         try:

@@ -2,7 +2,9 @@
 Job Utilities - Shared functions for job embedding and FAISS indexing
 """
 
+import logging
 import os
+import pickle
 import re
 import threading
 from datetime import datetime
@@ -14,17 +16,30 @@ from services.db_lock import safe_commit
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
 
+logger = logging.getLogger(__name__)
 
-# Initialize embeddings (shared across the app)
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+_embeddings = None
+_embeddings_lock = threading.Lock()
+
+
+def get_embeddings():
+    global _embeddings
+    if _embeddings is None:
+        with _embeddings_lock:
+            if _embeddings is None:
+                _embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-mpnet-base-v2"
+                )
+    return _embeddings
 
 JOB_VECTOR_INDEX = 'job_vector_index'
 
-# Prevents concurrent threads from writing the FAISS index at the same time,
-# which would corrupt index.faiss / index.pkl if writes interleave.
 _index_rebuild_lock = threading.RLock()
 
-# In-memory BM25 index cache: (BM25Okapi, [job_ids]) or None
+_faiss_cache = None
+_faiss_cache_lock = threading.RLock()
+_faiss_cache_mtime = 0
+
 _bm25_cache: tuple | None = None
 _bm25_lock = threading.RLock()
 
@@ -36,7 +51,7 @@ def tokenize_for_bm25(text: str) -> list[str]:
 def compute_job_embedding(job):
     """Compute and store embedding for a single job"""
     job_text = job.get_job_text()
-    vec = embeddings.embed_query(job_text)
+    vec = get_embeddings().embed_query(job_text)
     job.embedding = vec if isinstance(vec, list) else list(vec)
     job.embedding_updated_at = datetime.utcnow()
     return job.embedding
@@ -56,7 +71,7 @@ def compute_all_job_embeddings():
 
 
 def build_bm25_index():
-    """Build in-memory BM25 index from all active jobs. Returns (BM25Okapi, [job_ids])."""
+    """Build in-memory BM25 index from all active jobs. Persist to Redis for fast recovery."""
     global _bm25_cache
     with _bm25_lock:
         jobs = JobPosting.query.filter_by(is_active=True).all()
@@ -65,76 +80,118 @@ def build_bm25_index():
             return None
         corpus = [tokenize_for_bm25(job.get_job_text()) for job in jobs]
         job_ids = [job.id for job in jobs]
-        _bm25_cache = (BM25Okapi(corpus), job_ids)
-        print(f"Built BM25 index for {len(jobs)} jobs")
+        bm25 = BM25Okapi(corpus)
+        _bm25_cache = (bm25, job_ids)
+        logger.info("Built BM25 index for %d jobs", len(jobs))
+
+        try:
+            from services.redis_client import get_redis_binary
+            r = get_redis_binary()
+            r.set('bm25:index', pickle.dumps(bm25), ex=86400)
+            r.set('bm25:job_ids', pickle.dumps(job_ids), ex=86400)
+        except Exception as e:
+            logger.warning("Failed to persist BM25 to Redis: %s", e)
+
         return _bm25_cache
 
 
 def get_bm25_index() -> tuple | None:
-    """Return cached BM25 index, building from DB if not yet initialised."""
+    """Return cached BM25 index. Tries in-memory → Redis → DB rebuild."""
     global _bm25_cache
     with _bm25_lock:
-        if _bm25_cache is None:
-            build_bm25_index()
-        return _bm25_cache
+        if _bm25_cache is not None:
+            return _bm25_cache
+
+        try:
+            from services.redis_client import get_redis_binary
+            r = get_redis_binary()
+            bm25_data = r.get('bm25:index')
+            ids_data = r.get('bm25:job_ids')
+            if bm25_data and ids_data:
+                _bm25_cache = (pickle.loads(bm25_data), pickle.loads(ids_data))
+                logger.info("Loaded BM25 index from Redis")
+                return _bm25_cache
+        except Exception:
+            pass
+
+        return build_bm25_index()
 
 
 def invalidate_bm25_index():
-    """Drop the BM25 cache so the next call to get_bm25_index() rebuilds it."""
+    """Drop the BM25 cache (memory + Redis) so the next access rebuilds it."""
     global _bm25_cache
     with _bm25_lock:
         _bm25_cache = None
+    try:
+        from services.redis_client import get_redis_binary
+        r = get_redis_binary()
+        r.delete('bm25:index', 'bm25:job_ids')
+    except Exception:
+        pass
 
 
 def build_job_faiss_index():
-    """Build FAISS index from all active job embeddings for fast similarity search"""
+    """Build FAISS index from all active job embeddings for fast similarity search."""
+    global _faiss_cache, _faiss_cache_mtime
     with _index_rebuild_lock:
-        # First ensure all jobs have embeddings
         compute_all_job_embeddings()
 
-        # Get all active jobs with embeddings
         jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
 
         if not jobs:
-            print("No jobs available to build index")
+            logger.info("No jobs available to build index")
             return None
 
-        # Extract embeddings and metadata
         job_texts = [job.get_job_text() for job in jobs]
-        job_embeddings = [job.embedding for job in jobs]
+        job_embeddings_list = [job.embedding for job in jobs]
         job_metadatas = [{"job_id": job.id} for job in jobs]
 
-        # Create FAISS vector store
         vectorstore = FAISS.from_embeddings(
-            text_embeddings=list(zip(job_texts, job_embeddings)),
-            embedding=embeddings,
+            text_embeddings=list(zip(job_texts, job_embeddings_list)),
+            embedding=get_embeddings(),
             metadatas=job_metadatas,
             distance_metric="cosine"
         )
 
-        # Save to disk
         vectorstore.save_local(JOB_VECTOR_INDEX)
-        print(f"Built FAISS index for {len(jobs)} jobs")
+        logger.info("Built FAISS index for %d jobs", len(jobs))
 
-        # Keep BM25 in sync with FAISS — invalidate so next access rebuilds
+        with _faiss_cache_lock:
+            _faiss_cache = vectorstore
+            _faiss_cache_mtime = os.path.getmtime(
+                os.path.join(JOB_VECTOR_INDEX, "index.faiss")
+            )
+
         invalidate_bm25_index()
 
         return vectorstore
 
 
 def get_job_faiss_index():
-    """Load or build FAISS index for job embeddings"""
-    with _index_rebuild_lock:
+    """Load FAISS index from disk, caching in-process. Reloads if file changed."""
+    global _faiss_cache, _faiss_cache_mtime
+
+    index_path = os.path.join(JOB_VECTOR_INDEX, "index.faiss")
+
+    if not os.path.exists(index_path):
+        return build_job_faiss_index()
+
+    current_mtime = os.path.getmtime(index_path)
+
+    with _faiss_cache_lock:
+        if _faiss_cache is not None and current_mtime == _faiss_cache_mtime:
+            return _faiss_cache
+
         try:
-            if os.path.exists(os.path.join(JOB_VECTOR_INDEX, "index.faiss")):
-                return FAISS.load_local(
-                    JOB_VECTOR_INDEX,
-                    embeddings,
-                    allow_dangerous_deserialization=True
-                )
-            return build_job_faiss_index()
+            _faiss_cache = FAISS.load_local(
+                JOB_VECTOR_INDEX,
+                get_embeddings(),
+                allow_dangerous_deserialization=True
+            )
+            _faiss_cache_mtime = current_mtime
+            return _faiss_cache
         except Exception as e:
-            print(f"Error loading FAISS index: {e}")
+            logger.error("Failed to load FAISS index: %s", e)
             return build_job_faiss_index()
 
 
