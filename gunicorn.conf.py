@@ -25,3 +25,10 @@ bind = "0.0.0.0:5001"
 accesslog = "-"
 errorlog = "-"
 loglevel = "info"
+
+
+# ── Post-fork ────────────────────────────────────────────────────────────────
+def post_fork(server, worker):
+    """Pre-warm the embedding model in each worker after fork."""
+    from job_utils import get_embeddings
+    get_embeddings()

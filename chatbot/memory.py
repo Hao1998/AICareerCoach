@@ -204,7 +204,7 @@ Return ONLY the JSON array, no explanation."""
 def index_session_memories(app, user_id: int, messages: list, llm, session_date: datetime,
                            summary: str | None = None):
     """Embed and store session summary + discrete facts as UserMemoryChunk rows."""
-    from job_utils import embeddings as hf_embeddings
+    from job_utils import get_embeddings as _get_embeddings
 
     if summary is None:
         summary = summarize_session(messages, llm)
@@ -223,7 +223,7 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
     with app.app_context():
         for memory_type, content in chunks_to_index:
             try:
-                vec = hf_embeddings.embed_query(content)
+                vec = _get_embeddings().embed_query(content)
                 embedding = vec if isinstance(vec, list) else list(vec)
             except Exception as e:
                 logger.error("Failed to embed memory chunk: %s", e)
@@ -247,7 +247,7 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
 
 def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
     """Retrieve the most semantically relevant past memories for a given query."""
-    from job_utils import embeddings as hf_embeddings
+    from job_utils import get_embeddings as _get_embeddings
 
     chunks = (UserMemoryChunk.query
               .filter_by(user_id=user_id)
@@ -259,7 +259,7 @@ def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
         return "No long-term memories found for this user yet."
 
     try:
-        query_embedding = np.array(hf_embeddings.embed_query(query))
+        query_embedding = np.array(_get_embeddings().embed_query(query))
     except Exception as e:
         logger.error("Failed to embed memory search query: %s", e)
         return "Memory search temporarily unavailable."

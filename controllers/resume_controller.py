@@ -17,9 +17,9 @@ from langchain_community.vectorstores import FAISS
 
 from models import db, Resume, JobMatch, JobPosting
 from services.db_lock import safe_commit, safe_flush
-from job_utils import embeddings
-from services.resume_service import extract_text_from_pdf, get_resume_text, perform_qa, text_splitter
-from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain
+from job_utils import get_embeddings
+from services.resume_service import extract_text_from_pdf, get_resume_text, perform_qa, text_splitter, invalidate_resume_cache
+from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain, invoke_chain_with_retry, RETRYABLE_ERRORS
 from services.input_guard import scan_with_llm
 from services.job_service import find_matching_jobs
 from factory import limiter
@@ -89,10 +89,17 @@ def upload_file():
         user_vector_dir = os.path.join('vector_index', str(current_user.id))
         os.makedirs(user_vector_dir, exist_ok=True)
 
-        vectorstore = FAISS.from_texts(splitted_text, embeddings)
+        vectorstore = FAISS.from_texts(splitted_text, get_embeddings())
         vectorstore.save_local(user_vector_dir)
+        invalidate_resume_cache(current_user.id)
 
-        resume_analysis = get_resume_analysis_chain().run(resume=resume_text)
+        try:
+            resume_analysis = invoke_chain_with_retry(get_resume_analysis_chain(), resume=resume_text)
+        except RETRYABLE_ERRORS:
+            flash('AI service is temporarily unavailable. Resume saved — analysis will be available shortly.', 'warning')
+            safe_commit()
+            return redirect(url_for('auth.index'))
+
         resume.analysis = resume_analysis
         safe_commit()
 
@@ -153,7 +160,7 @@ def find_matching_jobs_endpoint():
             return jsonify({"error": "No resume found. Please upload your resume first."}), 400
 
         resume_text = get_resume_text(latest_resume)
-        resume_analysis = get_resume_analysis_chain().run(resume=resume_text)
+        resume_analysis = invoke_chain_with_retry(get_resume_analysis_chain(), resume=resume_text)
         matching_jobs = find_matching_jobs(resume_text, top_k=5)
 
         return render_template('results.html',
@@ -161,6 +168,8 @@ def find_matching_jobs_endpoint():
                                matching_jobs=matching_jobs,
                                filename=latest_resume.original_filename,
                                user=current_user)
+    except RETRYABLE_ERRORS:
+        return jsonify({"error": "Our AI service is temporarily unavailable. Please try again in a few minutes."}), 503
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -213,7 +222,8 @@ def prepare_roadmap():
 
         skill_gaps_str = ", ".join(skill_gaps) if skill_gaps else "No specific gaps identified"
 
-        roadmap_result = get_preparation_roadmap_chain().run(
+        roadmap_result = invoke_chain_with_retry(
+            get_preparation_roadmap_chain(),
             resume=resume_text[:3000],
             job_title=job.title,
             company=job.company,
@@ -227,6 +237,8 @@ def prepare_roadmap():
         return jsonify({"success": True, "roadmap": roadmap, "job_title": job.title,
                         "timeline_months": timeline_months})
 
+    except RETRYABLE_ERRORS:
+        return jsonify({"success": False, "error": "Our AI service is temporarily unavailable. Please try again in a few minutes."}), 503
     except json.JSONDecodeError as e:
         return jsonify({"success": False, "error": f"Failed to parse roadmap: {str(e)}"}), 500
     except Exception as e:
