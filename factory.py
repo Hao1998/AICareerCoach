@@ -12,7 +12,7 @@ import hashlib
 import json
 import os
 
-from flask import Flask, jsonify, url_for
+from flask import Flask, jsonify, render_template, request, url_for
 from flask_login import LoginManager, current_user
 from flask_migrate import Migrate
 from flask_limiter import Limiter
@@ -205,6 +205,33 @@ def create_app(config_name='default', skip_api_check=False):
         checks["scheduler"] = scheduler.is_running() if scheduler else False
         all_ok = all(checks.values())
         return jsonify({"status": "ready" if all_ok else "not_ready", **checks}), 200 if all_ok else 503
+
+    # ── Global error handlers ────────────────────────────────────────────────
+    def _wants_json():
+        return request.is_json or request.path.startswith('/api/')
+
+    @app.errorhandler(404)
+    def not_found(e):
+        if _wants_json():
+            return jsonify({"success": False, "error": "Not found"}), 404
+        return render_template('errors/404.html'), 404
+
+    @app.errorhandler(500)
+    def server_error(e):
+        if _wants_json():
+            return jsonify({"success": False, "error": "Internal server error"}), 500
+        return render_template('errors/500.html'), 500
+
+    @app.errorhandler(Exception)
+    def unhandled_exception(e):
+        # HTTPException subclasses (404, 405, etc.) should keep their own status code
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return e
+        app.logger.exception("Unhandled exception: %s", e)
+        if _wants_json():
+            return jsonify({"success": False, "error": "An unexpected error occurred"}), 500
+        return render_template('errors/500.html'), 500
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
     if not skip_api_check:

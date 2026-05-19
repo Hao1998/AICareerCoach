@@ -13,6 +13,8 @@ from factory import limiter
 from models import db, ChatMessage
 from services.db_lock import safe_commit
 from services.input_guard import scan_message
+from schemas.request_schemas import ChatMessageRequest
+from schemas.validate import validate_json
 
 chat_bp = Blueprint('chat', __name__)
 
@@ -36,15 +38,10 @@ def _get_chatbot():
 @chat_bp.route('/api/chat', methods=['POST'])
 @login_required
 @limiter.limit("20 per minute; 200 per day")
-def chat_api():
+@validate_json(ChatMessageRequest)
+def chat_api(validated: ChatMessageRequest):
     try:
-        data = request.get_json()
-        if not data or not data.get('message', '').strip():
-            return jsonify({"success": False, "error": "Message is required"}), 400
-
-        message = data['message'].strip()
-        if len(message) > 2000:
-            return jsonify({"success": False, "error": "Message too long (max 2000 characters)"}), 400
+        message = validated.message
 
         guard = scan_message(message)
         if not guard["safe"]:

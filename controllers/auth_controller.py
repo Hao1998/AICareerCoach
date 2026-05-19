@@ -10,14 +10,22 @@ from datetime import datetime
 
 from flask import Blueprint, request, render_template, redirect, url_for, flash, current_app
 from flask_login import login_user, logout_user, login_required, current_user
+from flask_limiter.errors import RateLimitExceeded
 
 from sqlalchemy.orm import joinedload
 
+from factory import limiter
 from models import db, User, Resume, JobMatch
 from services.db_lock import safe_commit
 from form import LoginForm, RegistrationForm
 
 auth_bp = Blueprint('auth', __name__)
+
+
+@auth_bp.errorhandler(RateLimitExceeded)
+def handle_rate_limit(e):
+    flash('Too many attempts. Please try again later.', 'error')
+    return redirect(url_for('auth.login')), 429
 
 
 @auth_bp.route('/')
@@ -27,6 +35,7 @@ def index():
 
 
 @auth_bp.route('/login', methods=['GET', 'POST'])
+@limiter.limit("10 per minute; 100 per hour", methods=['POST'])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('auth.index'))
@@ -52,6 +61,7 @@ def login():
 
 
 @auth_bp.route('/register', methods=['GET', 'POST'])
+@limiter.limit("5 per minute; 20 per hour", methods=['POST'])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('auth.index'))

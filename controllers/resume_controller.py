@@ -9,11 +9,15 @@ import os
 import json
 from datetime import datetime
 
+import magic
 from flask import Blueprint, request, render_template, redirect, url_for, flash, jsonify, current_app
 from flask_login import login_required, current_user
 from flask_limiter.errors import RateLimitExceeded
 from werkzeug.utils import secure_filename
 from langchain_community.vectorstores import FAISS
+
+ALLOWED_MIME_TYPES = {'application/pdf'}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 from models import db, Resume, JobMatch, JobPosting
 from services.db_lock import safe_commit, safe_flush
@@ -23,6 +27,8 @@ from services.llm_service import get_resume_analysis_chain, run_job_matching, ge
 from services.input_guard import scan_with_llm
 from services.job_service import find_matching_jobs
 from factory import limiter
+from schemas.request_schemas import RoadmapRequest
+from schemas.validate import validate_json
 
 resume_bp = Blueprint('resume', __name__)
 
@@ -45,6 +51,26 @@ def upload_file():
         return redirect(url_for('auth.index'))
 
     if file:
+        # Validate size — seek to end, read position, rewind
+        file.seek(0, 2)
+        size = file.tell()
+        file.seek(0)
+        if size > MAX_FILE_SIZE:
+            flash('File too large (max 10MB)', 'error')
+            return redirect(url_for('auth.index'))
+
+        # Validate MIME by sniffing file content, not by extension
+        header = file.read(2048)
+        file.seek(0)
+        try:
+            mime = magic.from_buffer(header, mime=True)
+        except Exception:
+            flash('Unable to verify file type. Please upload a valid PDF.', 'error')
+            return redirect(url_for('auth.index'))
+        if mime not in ALLOWED_MIME_TYPES:
+            flash('Only PDF files are allowed', 'error')
+            return redirect(url_for('auth.index'))
+
         original_filename = secure_filename(file.filename)
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
         filename = f"{timestamp}_{original_filename}"
@@ -177,14 +203,11 @@ def find_matching_jobs_endpoint():
 @resume_bp.route('/api/prepare-roadmap', methods=['POST'])
 @login_required
 @limiter.limit("5 per minute; 30 per day")
-def prepare_roadmap():
+@validate_json(RoadmapRequest)
+def prepare_roadmap(validated: RoadmapRequest):
     try:
-        data = request.get_json()
-        job_id = data.get('job_id')
-        timeline_months = data.get('timeline_months')
-
-        if not job_id or not timeline_months:
-            return jsonify({"success": False, "error": "Missing job_id or timeline_months"}), 400
+        job_id = validated.job_id
+        timeline_months = validated.timeline_months
 
         job = JobPosting.query.get(job_id)
         if not job:
