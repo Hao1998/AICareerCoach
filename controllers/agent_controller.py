@@ -14,10 +14,14 @@ from flask_login import login_required, current_user
 
 from sqlalchemy.orm import joinedload
 
+from pydantic import ValidationError
+
 from models import db, AgentConfig, AgentRunHistory, JobMatch
 from jobs.fetchers.registry import USER_VISIBLE_SOURCES
 from services.db_lock import safe_commit
 from job_utils import update_user_preferences
+from schemas.request_schemas import AgentConfigUpdateRequest, FeedbackRequest
+from schemas.validate import validate_json
 
 agent_bp = Blueprint('agent', __name__)
 
@@ -89,7 +93,23 @@ def agent_config():
 
     if request.method == 'POST':
         try:
-            data = request.get_json() if request.is_json else request.form
+            if request.is_json:
+                raw = request.get_json(silent=True) or {}
+                try:
+                    parsed = AgentConfigUpdateRequest(**raw)
+                except ValidationError as e:
+                    details = [
+                        f"{'.'.join(str(loc) for loc in err['loc']) or '<root>'}: {err['msg']}"
+                        for err in e.errors()
+                    ]
+                    return jsonify({
+                        "success": False,
+                        "error": "Validation failed",
+                        "details": details,
+                    }), 400
+                data = parsed.model_dump(exclude_unset=True)
+            else:
+                data = request.form
 
             schedule_changed = False
             enabled_changed = False
@@ -104,7 +124,11 @@ def agent_config():
                 schedule_changed = True
                 config.timezone = new_timezone
 
-            new_is_enabled = data.get('is_enabled', 'true').lower() in ['true', '1', 'on']
+            raw_enabled = data.get('is_enabled', True)
+            if isinstance(raw_enabled, bool):
+                new_is_enabled = raw_enabled
+            else:
+                new_is_enabled = str(raw_enabled).lower() in ['true', '1', 'on']
             if new_is_enabled != config.is_enabled:
                 enabled_changed = True
                 config.is_enabled = new_is_enabled
@@ -215,11 +239,25 @@ def agent_run_matches(run_id):
 def agent_match_feedback(match_id):
     try:
         match = JobMatch.query.filter_by(id=match_id, user_id=current_user.id).first_or_404()
-        data = request.get_json() if request.is_json else request.form
-        feedback = data.get('feedback')
 
-        if feedback not in ['interested', 'not_interested', 'applied']:
-            return jsonify({'success': False, 'error': 'Invalid feedback value'}), 400
+        if request.is_json:
+            try:
+                parsed = FeedbackRequest(**(request.get_json(silent=True) or {}))
+            except ValidationError as e:
+                details = [
+                    f"{'.'.join(str(loc) for loc in err['loc']) or '<root>'}: {err['msg']}"
+                    for err in e.errors()
+                ]
+                return jsonify({
+                    'success': False,
+                    'error': 'Validation failed',
+                    'details': details,
+                }), 400
+            feedback = parsed.feedback
+        else:
+            feedback = request.form.get('feedback')
+            if feedback not in ['interested', 'not_interested', 'applied']:
+                return jsonify({'success': False, 'error': 'Invalid feedback value'}), 400
 
         match.user_feedback = feedback
         match.feedback_at = datetime.utcnow()

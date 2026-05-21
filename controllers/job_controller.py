@@ -21,6 +21,12 @@ from services.resume_service import get_resume_text
 from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring_structured, get_preparation_roadmap_chain
 from services.job_service import find_matching_jobs, fetch_and_save_jobs
 from factory import limiter
+from schemas.request_schemas import (
+    JobFetchRequest,
+    JobMatchRefreshRequest,
+    JobRoadmapRequest,
+)
+from schemas.validate import validate_json
 
 job_bp = Blueprint('jobs', __name__)
 
@@ -99,16 +105,17 @@ def fetch_jobs():
 
 @job_bp.route('/api/jobs/fetch', methods=['POST'])
 @login_required
-def fetch_jobs_api():
+@validate_json(JobFetchRequest)
+def fetch_jobs_api(validated: JobFetchRequest):
     try:
-        data = request.get_json() or {}
-        keywords = data.get('keywords')
-        location = data.get('location')
-        max_jobs = int(data.get('max_jobs', 50))
-        max_days_old = int(data.get('max_days_old', 30))
-        sources = data.get('sources')
-
-        stats = fetch_and_save_jobs(current_user.id, keywords, location, max_jobs, max_days_old, sources=sources)
+        stats = fetch_and_save_jobs(
+            current_user.id,
+            validated.keywords,
+            validated.location,
+            validated.max_jobs,
+            validated.max_days_old,
+            sources=validated.sources,
+        )
 
         if stats['errors'] > 0:
             return jsonify({'success': False, 'stats': stats,
@@ -236,7 +243,8 @@ def get_matches_api(resume_id):
 @job_bp.route('/api/jobs/<int:job_id>/match', methods=['POST'])
 @login_required
 @limiter.limit("10 per minute; 100 per day")
-def check_job_match(job_id):
+@validate_json(JobMatchRefreshRequest, allow_empty=True)
+def check_job_match(job_id, validated: JobMatchRefreshRequest):
     try:
         job = JobPosting.query.get(job_id)
         if not job or not job.is_active:
@@ -248,7 +256,7 @@ def check_job_match(job_id):
         if not latest_resume:
             return jsonify({"error": "No resume found. Please upload your resume first."}), 400
 
-        force_refresh = (request.get_json(silent=True, force=True) or {}).get('refresh', False)
+        force_refresh = validated.refresh
 
         existing_match = JobMatch.query.filter_by(
             user_id=current_user.id,
@@ -306,7 +314,8 @@ def check_job_match(job_id):
 @job_bp.route('/api/jobs/<int:job_id>/tailor', methods=['POST'])
 @login_required
 @limiter.limit("10 per minute; 50 per day")
-def tailor_resume_for_job(job_id):
+@validate_json(JobMatchRefreshRequest, allow_empty=True)
+def tailor_resume_for_job(job_id, validated: JobMatchRefreshRequest):
     """ATS-optimize the user's resume for a specific job. Caches result in JobMatch."""
     try:
         job = JobPosting.query.get(job_id)
@@ -319,9 +328,7 @@ def tailor_resume_for_job(job_id):
         if not latest_resume:
             return jsonify({"error": "No resume found. Please upload your resume first."}), 400
 
-        # Return cached result if available
-        force_refresh = request.get_json(silent=True, force=True) or {}
-        force_refresh = force_refresh.get('refresh', False)
+        force_refresh = validated.refresh
 
         existing_match = JobMatch.query.filter_by(
             user_id=current_user.id,
@@ -385,7 +392,8 @@ def tailor_resume_for_job(job_id):
 @job_bp.route('/api/jobs/<int:job_id>/roadmap', methods=['POST'])
 @login_required
 @limiter.limit("5 per minute; 30 per day")
-def prepare_job_roadmap(job_id):
+@validate_json(JobRoadmapRequest, allow_empty=True)
+def prepare_job_roadmap(job_id, validated: JobRoadmapRequest):
     """Generate a preparation roadmap for a specific job. Caches result in JobMatch."""
     try:
         job = JobPosting.query.get(job_id)
@@ -398,9 +406,8 @@ def prepare_job_roadmap(job_id):
         if not latest_resume:
             return jsonify({"error": "No resume found. Please upload your resume first."}), 400
 
-        data = request.get_json(silent=True, force=True) or {}
-        timeline_months = data.get('timeline_months', 3)
-        force_refresh = data.get('refresh', False)
+        timeline_months = validated.timeline_months
+        force_refresh = validated.refresh
 
         existing_match = JobMatch.query.filter_by(
             user_id=current_user.id,

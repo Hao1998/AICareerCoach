@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 SESSION_TIMEOUT_MINUTES = 5
 
 
+def _extract_json(content: str) -> str:
+    """Strip markdown code fences from LLM output before JSON parsing."""
+    content = content.strip()
+    if content.startswith("```"):
+        # Remove opening fence (```json or ```)
+        content = content.split("\n", 1)[-1]
+        # Remove closing fence
+        if content.endswith("```"):
+            content = content.rsplit("```", 1)[0]
+    return content.strip()
+
+
 @traceable(run_type="llm", name="preference-extractor")
 def extract_explicit_preferences(messages, llm, existing: Optional[dict] = None) -> Optional[dict]:
     """Extract structured job preferences from a conversation, merging with existing ones."""
@@ -59,8 +71,9 @@ Return ONLY the JSON object or null, no explanation."""
 
     try:
         result = llm.invoke(prompt)
-        content = result.content.strip() if hasattr(result, 'content') else str(result).strip()
-        if content.lower() == 'null' or not content:
+        content = result.content if hasattr(result, 'content') else str(result)
+        content = _extract_json(content)
+        if not content or content.lower() == 'null':
             return existing
         prefs = json.loads(content)
         return prefs if isinstance(prefs, dict) else existing
@@ -193,7 +206,10 @@ Return ONLY the JSON array, no explanation."""
 
     try:
         result = llm.invoke(prompt)
-        content = result.content.strip() if hasattr(result, 'content') else str(result).strip()
+        content = result.content if hasattr(result, 'content') else str(result)
+        content = _extract_json(content)
+        if not content:
+            return []
         facts = json.loads(content)
         return facts if isinstance(facts, list) else []
     except Exception as e:
