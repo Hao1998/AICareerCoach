@@ -220,7 +220,7 @@ Return ONLY the JSON array, no explanation."""
 def index_session_memories(app, user_id: int, messages: list, llm, session_date: datetime,
                            summary: str | None = None):
     """Embed and store session summary + discrete facts as UserMemoryChunk rows."""
-    from job_utils import get_embeddings as _get_embeddings
+    from jobs.utils import get_embeddings as _get_embeddings
 
     if summary is None:
         summary = summarize_session(messages, llm)
@@ -263,7 +263,7 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
 
 def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
     """Retrieve the most semantically relevant past memories for a given query."""
-    from job_utils import get_embeddings as _get_embeddings
+    from jobs.utils import get_embeddings as _get_embeddings
 
     chunks = (UserMemoryChunk.query
               .filter_by(user_id=user_id)

@@ -14,8 +14,8 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
-from job_utils import get_embeddings, get_job_faiss_index, get_bm25_index, tokenize_for_bm25
-from job_fetcher import fetch_jobs_from_adzuna
+from jobs.utils import get_embeddings, get_job_faiss_index, get_bm25_index, tokenize_for_bm25
+from jobs.fetcher import fetch_jobs_from_adzuna
 from jobs.fetchers.registry import fetch_from_sources
 
 # FAISS and HuggingFace embeddings are CPU-bound C extensions that gevent

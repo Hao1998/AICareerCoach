@@ -84,7 +84,8 @@ def handle_chat_message(data):
             with app.app_context():
                 from chatbot.agent import (
                     detect_session_boundary, _load_context, build_system_prompt,
-                    get_conversation_history, build_tools, _build_executor, _extract_intent
+                    get_conversation_history, build_tools, _build_agent, _invoke_agent,
+                    _extract_intent, _tool_steps_from_messages, stream_fallback_text,
                 )
                 from services.llm_service import get_streaming_llm
 
@@ -109,20 +110,25 @@ def handle_chat_message(data):
                     chat_history = chat_history[:-1]
 
                 tools = build_tools(app, user_id, progress_cb=handler.push_progress)
-                executor = _build_executor(llm, tools, system_prompt)
+                agent = _build_agent(llm, tools, system_prompt)
 
-                result = executor.invoke(
-                    {"input": message, "chat_history": chat_history},
-                    config={"callbacks": [handler]},
+                response_text, messages = _invoke_agent(
+                    agent, message, chat_history, callbacks=[handler]
                 )
 
                 if cancel_event.is_set():
                     return
 
-                response_text = handler.captured_text or result.get(
-                    "output", "I'm sorry, I couldn't process your request."
+                # If nothing streamed (e.g. cached response), push the final text
+                # so the UI shows it instead of "(no response)".
+                fallback = stream_fallback_text(handler.captured_text, response_text)
+                if fallback:
+                    socketio.emit('token', {'content': fallback}, room=sid)
+
+                response_text = handler.captured_text or response_text or (
+                    "I'm sorry, I couldn't process your request."
                 )
-                intent, action_data = _extract_intent(result.get("intermediate_steps", []))
+                intent, action_data = _extract_intent(_tool_steps_from_messages(messages))
 
                 db.session.add(ChatMessage(
                     user_id=user_id, role='assistant',

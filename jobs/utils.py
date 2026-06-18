@@ -1,5 +1,12 @@
 """
 Job Utilities - Shared functions for job embedding and FAISS indexing
+
+NOTE (future migration): the FAISS index here is in-process and saved to local
+disk, so it cannot be shared across multiple app instances and must be rebuilt
+per process. This is acceptable for the current single-/few-instance deployment.
+When we scale horizontally, move embeddings into Postgres `pgvector` (already on
+PostgreSQL in prod) so the vector store is shared and concurrent-write safe.
+Tracked as a deliberate follow-up — keep FAISS for now.
 """
 
 import logging

@@ -59,19 +59,13 @@ def create_app(config_name='default', skip_api_check=False):
     # This means rephrased queries like "analyze my resume" and "review my CV"
     # both hit the same cached response — unlike exact-match caching.
     # Uses the same HuggingFace embedding model already used for job matching.
+    from services.semantic_cache import DEFAULT_BYPASS_PREFIXES
     set_llm_cache(SemanticCache(
         embedding_model=None,
         score_threshold=0.90,
         ttl_seconds=3600,
-        # Job-specific prompts embed similarly across different jobs because the
-        # resume text dominates the vector, causing false cache hits. These are
-        # cached at the DB level (JobMatch) instead, so bypass semantic caching.
-        bypass_prefixes=[
-            "You are the Job Analyst Agent",       # JobAnalystAgent system prompt
-            "You are the Resume Tailoring Agent",  # ResumeTailoringAgent system prompt
-            "Role: You are an AI Career Coach creating personalized interview",  # roadmap
-            "You are a senior career coach",
-        ],
+        # Prompts that must never be semantically cached — see DEFAULT_BYPASS_PREFIXES.
+        bypass_prefixes=DEFAULT_BYPASS_PREFIXES,
     ))
 
     # ── Observability ─────────────────────────────────────────────────────────
@@ -235,10 +229,19 @@ def create_app(config_name='default', skip_api_check=False):
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
     if not skip_api_check:
-        from agent_scheduler import init_scheduler
-        from job_scout_agent import JobScoutAgent
-        scheduler = init_scheduler(app, JobScoutAgent)
-        app.extensions['scheduler'] = scheduler
+        from jobs.scheduler import init_scheduler, AgentScheduler
+        from jobs.scout_agent import JobScoutAgent
+
+        if app.config.get('USE_CELERY'):
+            # Scheduled scouts run via Celery Beat (separate worker/beat process),
+            # so the in-process APScheduler cron is NOT started. A scheduler object
+            # is still created for manual "Check Now" triggers, which run directly.
+            from tasks.celery_app import make_celery
+            make_celery(app)
+            app.extensions['scheduler'] = AgentScheduler(app, JobScoutAgent)
+            app.logger.info("Celery enabled: scheduled scouts via Beat; APScheduler cron disabled.")
+        else:
+            app.extensions['scheduler'] = init_scheduler(app, JobScoutAgent)
 
         _validate_api_keys(app)
 

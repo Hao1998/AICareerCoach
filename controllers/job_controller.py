@@ -16,9 +16,9 @@ from sqlalchemy.orm import joinedload
 
 from models import db, JobPosting, JobMatch, Resume
 from services.db_lock import safe_commit
-from job_utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
+from jobs.utils import compute_job_embedding, compute_all_job_embeddings, build_job_faiss_index
 from services.resume_service import get_resume_text
-from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring_structured, get_preparation_roadmap_chain
+from services.llm_service import get_resume_analysis_chain, run_job_matching, run_resume_tailoring_structured, get_preparation_roadmap_chain, invoke_chain_with_retry
 from services.job_service import find_matching_jobs, fetch_and_save_jobs
 from factory import limiter
 from schemas.request_schemas import (
@@ -445,7 +445,8 @@ def prepare_job_roadmap(job_id, validated: JobRoadmapRequest):
 
         skill_gaps_str = ", ".join(skill_gaps) if skill_gaps else "No specific gaps identified"
 
-        roadmap_raw = get_preparation_roadmap_chain().run(
+        roadmap_raw = invoke_chain_with_retry(
+            get_preparation_roadmap_chain(),
             resume=resume_text[:3000],
             job_title=job.title,
             company=job.company,

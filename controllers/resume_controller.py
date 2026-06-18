@@ -21,7 +21,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 from models import db, Resume, JobMatch, JobPosting
 from services.db_lock import safe_commit, safe_flush
-from job_utils import get_embeddings
+from jobs.utils import get_embeddings
 from services.resume_service import extract_text_from_pdf, get_resume_text, perform_qa, text_splitter, invalidate_resume_cache
 from services.llm_service import get_resume_analysis_chain, run_job_matching, get_preparation_roadmap_chain, invoke_chain_with_retry, RETRYABLE_ERRORS
 from services.input_guard import scan_with_llm
@@ -100,14 +100,9 @@ def upload_file():
             flash('Your resume contains content that cannot be processed. Please upload a valid resume.', 'error')
             return redirect(url_for('auth.index'))
 
-        JobMatch.query.filter_by(user_id=current_user.id).update({
-            JobMatch.match_score: None,
-            JobMatch.matched_skills: None,
-            JobMatch.gaps: None,
-            JobMatch.recommendation: None,
-            JobMatch.tailoring_result: None,
-            JobMatch.roadmap_result: None,
-        })
+        # Delete stale match results so they're recalculated against the new resume.
+        # match_score is NOT NULL so we can't set it to None; deletion is safer.
+        JobMatch.query.filter_by(user_id=current_user.id).delete()
 
         resume.text_content = resume_text  # cache so future requests skip PDF I/O
         splitted_text = text_splitter.split_text(resume_text)

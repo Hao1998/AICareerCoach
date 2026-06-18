@@ -9,7 +9,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from factory import create_app, socketio
-from job_utils import build_job_faiss_index, JOB_VECTOR_INDEX
+from jobs.utils import build_job_faiss_index, JOB_VECTOR_INDEX
 
 env = os.getenv('FLASK_ENV', 'development')
 app = create_app(config_name=env)
