@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from models import db, AgentConfig, AgentRunHistory, JobMatch
 from jobs.fetchers.registry import USER_VISIBLE_SOURCES
 from services.db_lock import safe_commit
-from job_utils import update_user_preferences
+from jobs.utils import update_user_preferences
 from schemas.request_schemas import AgentConfigUpdateRequest, FeedbackRequest
 from schemas.validate import validate_json
 
@@ -53,7 +53,7 @@ def trigger_agent():
 @login_required
 def stream_agent_run(run_id):
     """SSE endpoint — pushes progress events to the browser as they are emitted."""
-    from job_scout_agent import get_run_events, cleanup_run_progress
+    from jobs.scout_agent import get_run_events, cleanup_run_progress
 
     # Verify this run belongs to the current user
     run = AgentRunHistory.query.filter_by(id=run_id, user_id=current_user.id).first()

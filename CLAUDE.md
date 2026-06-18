@@ -14,6 +14,9 @@ AI-powered career coaching platform. Users upload resumes, get LLM-driven analys
 | DB upgrade | `flask --app wsgi db upgrade` |
 | Evals | `python evals/run_all.py` |
 | MCP server | `python mcp_server.py` |
+| Celery worker | `celery -A celery_worker.celery worker --loglevel=info -Q scout` |
+| Celery beat | `celery -A celery_worker.celery beat --loglevel=info` |
+| Unit tests | `python -m pytest` (32 tests, no API key needed) |
 
 **Required env vars before starting:**
 
@@ -26,6 +29,9 @@ AI-powered career coaching platform. Users upload resumes, get LLM-driven analys
 | `DATABASE_URL` | No | Defaults to SQLite at `instance/career_coach.db` |
 | `REDIS_URL` | No | Defaults to `redis://localhost:6379/0` |
 | `CHECKPOINT_DB_PATH` | No | LangGraph checkpoint DB; defaults to SQLite |
+| `USE_CELERY` | No | `true` to enable Celery+Beat scheduling; defaults to APScheduler |
+| `CELERY_BROKER_URL` | No | Broker URL for Celery; defaults to `REDIS_URL` |
+| `CELERY_RESULT_BACKEND` | No | Result backend for Celery; defaults to `REDIS_URL` |
 | `OTEL_EXPORTER_ENDPOINT` | No | OpenTelemetry tracing (opt-in) |
 | `SENTRY_DSN` | No | Sentry error tracking (opt-in) |
 
@@ -47,7 +53,7 @@ agents/           ← specialist single-task LLM workers (JobAnalyst,
 services/         ← agents are called FROM services/, not the other way
     ↑
 chatbot/          ← conversational orchestration layer only
-  agent.py        ← CareerCoachChatbot: AgentExecutor, system prompt, streaming
+  agent.py        ← CareerCoachChatbot: LangGraph ReAct agent, system prompt, streaming
   tools.py        ← LangChain @tool wrappers around services/ calls
   planner.py      ← long-horizon Plan→Execute→Replan loop
   memory.py       ← session summarisation, conversation history
@@ -55,13 +61,19 @@ chatbot/          ← conversational orchestration layer only
 jobs/fetchers/    ← external API adapters; inherit BaseJobFetcher
     ↓
 jobs/utils.py     ← embedding + FAISS index helpers
+jobs/schedule_selector.py  ← pure function: due_user_ids(configs, now_utc)
+
+tasks/            ← Celery task definitions (only used when USE_CELERY=true)
+  celery_app.py   ← make_celery(), task registration, Beat schedule
+  scout_tasks.py  ← run_scout_for_user_logic, dispatch_due_scouts_logic
+celery_worker.py  ← Celery entry point (`celery -A celery_worker.celery worker`)
 ```
 
 **`chatbot/` vs `agents/` — the key distinction:**
 
 | Layer | Role | Calls into |
 |---|---|---|
-| `chatbot/` | Conversational orchestration. Runs the `AgentExecutor`, manages the user-facing chat loop, tools, memory, and planning. | `services/` only (never directly into `agents/`) |
+| `chatbot/` | Conversational orchestration. Runs the LangGraph `create_react_agent`, manages the user-facing chat loop, tools, memory, and planning. | `services/` only (never directly into `agents/`) |
 | `agents/` | Specialist LLM workers. Each does exactly one task (score a job, tailor a resume, extract keywords). Structured Pydantic output. | `services/` (for helpers like embeddings) |
 
 `chatbot/tools.py` surfaces agent capabilities to the chat interface, but always via the `services/` abstraction — never by importing an agent directly.
@@ -85,10 +97,12 @@ These root-level files are superseded by the structured packages above. They rem
 | Key | Type | Initialized in |
 |---|---|---|
 | `app.extensions['llm']` | `ChatXAI` | `services/llm_service.py` `get_llm()` |
-| `app.extensions['scheduler']` | `APScheduler` | `agent_scheduler.py` `init_scheduler()` |
+| `app.extensions['scheduler']` | `APScheduler` | `jobs/scheduler.py` `init_scheduler()` — only when `USE_CELERY` is false |
+| `app.extensions['celery']` | `Celery` | `tasks/celery_app.py` `make_celery()` — only when `USE_CELERY=true` |
 
 Access from request context: `current_app.extensions['scheduler']`  
-Background threads still need `with app.app_context():` — the extensions dict is not thread-local, but DB sessions are.
+Background threads still need `with app.app_context():` — the extensions dict is not thread-local, but DB sessions are.  
+Celery worker tasks also need `with app.app_context():` — they run in a separate process with no active request.
 
 ### Key files at a glance
 
@@ -106,7 +120,11 @@ Background threads still need `with app.app_context():` — the extensions dict 
 | Chat memory / summarisation | `chatbot/memory.py` |
 | Specialist agent registry + cache | `agents/coordinator.py` |
 | Job fetcher registry | `jobs/fetchers/registry.py` |
-| Scheduler (when/how job scout runs) | `jobs/scheduler.py` |
+| APScheduler scheduling (default mode) | `jobs/scheduler.py` |
+| Celery task definitions + Beat schedule | `tasks/celery_app.py` |
+| Scout task logic (testable, broker-free) | `tasks/scout_tasks.py` |
+| Per-user timezone schedule selection | `jobs/schedule_selector.py` |
+| Semantic cache bypass rules | `services/semantic_cache.py` `DEFAULT_BYPASS_PREFIXES` |
 | Request validation | `schemas/request_schemas.py` |
 | Structured LLM output schemas | `schemas/output_schemas.py` |
 | Prompt injection guard | `services/input_guard.py` |
@@ -262,5 +280,5 @@ Evals must pass before merging any change that touches the logic above.
 - **App context in background threads.** Any DB operation outside a request must be wrapped: `with app.app_context(): ...`
 - **`safe_commit()` for SQLite.** Use `services/db_lock.safe_commit()` inside job fetchers and background jobs (prevents WAL lock contention). Regular `db.session.commit()` is fine everywhere else.
 - **Structured output only.** LLM responses that feed application logic must go through Pydantic schemas via `with_structured_output()`. Free-text parsing is banned.
-- **Semantic cache bypass list.** Job-specific and resume-specific prompts must stay in `factory.py`'s `bypass_prefixes` list to prevent false cache hits across different users' data.
+- **Semantic cache bypass list.** Job-specific, resume-specific, and conversational chat prompts must stay in `services/semantic_cache.py`'s `DEFAULT_BYPASS_PREFIXES` list (single source of truth, imported by `factory.py`). Chat prompts in particular must bypass because identical system prompts cause different user messages to collide in the cache, producing wrong answers and silent "(no response)" in the streaming UI.
 - **`url_for` with blueprint prefix.** Always `url_for('blueprint_name.function_name')` — bare function names will raise `BuildError` at runtime.

@@ -93,13 +93,14 @@ This is a solo-built, end-to-end AI application — not a tutorial follow-along.
 | Layer | Technology |
 |-------|-----------|
 | Backend | Flask, Gunicorn + gevent, Flask-SocketIO |
-| AI/LLM | LangChain, LangGraph, xAI Grok-3 / Grok-3-mini |
+| AI/LLM | LangChain LCEL, LangGraph, xAI Grok-3 / Grok-3-mini |
 | Embeddings | HuggingFace `all-mpnet-base-v2`, FAISS |
 | Database | SQLAlchemy, Flask-Migrate (Alembic), SQLite / PostgreSQL |
 | Caching | Redis (rate limiting + session), semantic LLM cache |
+| Task queue | Celery + Celery Beat (optional, enabled via `USE_CELERY=true`) |
 | Security | Flask-Login, Flask-Limiter, input guard (prompt injection detection) |
 | Observability | LangSmith tracing, OpenTelemetry (OTLP), Sentry, structured logging |
-| Evaluation | RAGAS, custom eval harness |
+| Evaluation | RAGAS, custom eval harness, offline unit test suite (32 tests, no API key) |
 | External APIs | Adzuna, Remotive, Jobicy, RemoteOK, Himalayas, The Muse, Arbeitnow, Greenhouse |
 | MCP | FastMCP (6 tools + 2 resources, per-user auth, async audit log) |
 | Frontend | Jinja2, Tailwind CSS, Framer Motion, SSE + SocketIO streaming |
@@ -108,12 +109,16 @@ This is a solo-built, end-to-end AI application — not a tutorial follow-along.
 ## Key Features
 
 ### Multi-Agent Job Scout
-An autonomous agent that runs on a configurable schedule (APScheduler), searching for jobs matching your resume profile. Built as a LangGraph state machine with:
+An autonomous agent that runs on a configurable schedule, searching for jobs matching your resume profile. Built as a LangGraph state machine with:
 - Security guard agent (Grok-3-mini) — validates all inputs before processing
 - Keyword research agent (Grok-3-mini) — extracts search terms from resume
 - Job search planner agent — structures the search strategy
 - Job analyst agent (Grok-3) — scores and ranks results
 - Resume tailoring agent (Grok-3) — suggests resume modifications per job
+
+Scheduling runs in two modes (controlled by `USE_CELERY`):
+- **Default (APScheduler)** — in-process scheduler, zero extra infrastructure, suitable for single-server dev/staging
+- **Celery + Beat** — decoupled worker processes driven by a Beat clock; workers can scale independently of the web tier, eliminates duplicate runs across gunicorn workers
 
 ### Multi-Source Job Fetching
 A pluggable fetcher registry aggregates listings from 8 job board APIs in parallel:
@@ -124,7 +129,7 @@ A pluggable fetcher registry aggregates listings from 8 job board APIs in parall
 - **Greenhouse** — direct company ATS listings
 
 ### Semantic Resume Matching
-1. PDF text extraction (PyPDF2 + pdfplumber)
+1. PDF text extraction (pypdf — blank/image-only pages tolerated)
 2. Chunk and embed with HuggingFace `all-mpnet-base-v2` sentence transformers
 3. Store in FAISS index for fast cosine-similarity search
 4. LLM-scored match analysis with skill gap identification
@@ -188,11 +193,18 @@ python app.py  # → http://localhost:5001
 # Production
 gunicorn wsgi:app -c gunicorn.conf.py
 
-# Docker
+# Celery worker + beat (optional — required when USE_CELERY=true)
+celery -A celery_worker.celery worker --loglevel=info -Q scout
+celery -A celery_worker.celery beat   --loglevel=info
+
+# Docker (starts app + worker + beat automatically)
 docker compose up --build
 
 # MCP Server
 python mcp_server.py  # → http://localhost:8001
+
+# Unit tests (no API key needed)
+python -m pytest
 ```
 
 ### Database Migrations
@@ -241,7 +253,7 @@ python scripts/migrate_sqlite_to_postgres.py
 │   ├── job_analyst_agent.py
 │   └── resume_tailoring_agent.py
 ├── chatbot/                # Conversational agent
-│   ├── agent.py            # AgentExecutor + intent detection
+│   ├── agent.py            # LangGraph ReAct agent + intent detection + streaming
 │   ├── memory.py           # Session-aware conversation memory
 │   ├── planner.py          # Task planning for complex requests
 │   └── tools.py            # Tool definitions
@@ -257,7 +269,8 @@ python scripts/migrate_sqlite_to_postgres.py
 │   │   ├── themuse.py
 │   │   ├── arbeitnow.py
 │   │   └── greenhouse.py
-│   ├── scheduler.py        # APScheduler integration
+│   ├── scheduler.py        # APScheduler integration (default mode)
+│   ├── schedule_selector.py # Timezone-aware due-user selection for Celery Beat
 │   ├── scout_agent.py      # JobScoutAgent orchestrator
 │   ├── scout_graph.py      # LangGraph state machine definition
 │   └── utils.py            # Embedding helpers, FAISS index management
@@ -265,6 +278,19 @@ python scripts/migrate_sqlite_to_postgres.py
 │   ├── request_schemas.py
 │   ├── output_schemas.py
 │   └── validate.py
+├── tasks/                  # Celery task definitions (USE_CELERY=true only)
+│   ├── celery_app.py       # make_celery(), task registration, Beat schedule
+│   └── scout_tasks.py      # Scout task logic (testable without broker)
+├── celery_worker.py        # Celery entry point
+├── tests/                  # Offline unit test suite (32 tests, no API key)
+│   ├── test_agent_graph.py
+│   ├── test_intent_extraction.py
+│   ├── test_llm_chains.py
+│   ├── test_resume_qa.py
+│   ├── test_schedule_selector.py
+│   ├── test_scout_tasks.py
+│   ├── test_celery_app.py
+│   └── test_semantic_cache_bypass.py
 ├── mcp_server.py           # MCP tool server (FastMCP)
 ├── evals/                  # Evaluation suite (RAGAS)
 │   ├── chat_eval.py

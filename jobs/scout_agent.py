@@ -16,7 +16,7 @@ from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from services.db_lock import safe_commit
 from jobs.utils import get_job_faiss_index, build_job_faiss_index, cosine_similarity
-import PyPDF2
+from pypdf import PdfReader
 import numpy as np
 from jobs.scout_graph import build_job_scout_graph
 
@@ -123,10 +123,10 @@ class JobScoutAgent:
     def extract_text_from_pdf(self, pdf_path):
         """Extract text from PDF resume"""
         with open(pdf_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
+            reader = PdfReader(file)
             text = ""
-            for page_num in range(len(reader.pages)):
-                text += reader.pages[page_num].extract_text()
+            for page in reader.pages:
+                text += page.extract_text() or ""
         return text
 
     def run_for_user(self, user_id, run_type='manual', existing_run_id=None):
@@ -252,7 +252,7 @@ class JobScoutAgent:
     def _fetch_new_jobs(self, keywords, config):
         """Fetch new jobs from all sources enabled in the user's config."""
         from jobs.fetchers.registry import fetch_from_sources
-        from job_fetcher import fetch_jobs_from_adzuna
+        from jobs.fetcher import fetch_jobs_from_adzuna
 
         location = config.adzuna_location
         max_jobs = config.adzuna_max_jobs or 20

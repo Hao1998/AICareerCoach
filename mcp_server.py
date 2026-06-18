@@ -247,7 +247,7 @@ def _find_matching_jobs_sync(top_k: int) -> str:
     with flask_app.app_context():
         from models import Resume
         from services.job_service import find_matching_jobs as _find_jobs
-        from services.resume_service import extract_text_from_pdf
+        from services.resume_service import get_resume_text
 
         resume = (
             Resume.query.filter_by(user_id=_AUTHENTICATED_USER_ID, is_active=True)
@@ -260,7 +260,7 @@ def _find_matching_jobs_sync(top_k: int) -> str:
                 "error": "No active resume found. Upload a resume first.",
             })
 
-        resume_text = extract_text_from_pdf(resume.file_path)
+        resume_text = get_resume_text(resume)
         matches = _find_jobs(resume_text, top_k=top_k)
 
         result = [
@@ -282,8 +282,8 @@ def _find_matching_jobs_sync(top_k: int) -> str:
 def _analyze_resume_sync() -> str:
     with flask_app.app_context():
         from models import Resume
-        from services.resume_service import extract_text_from_pdf
-        from services.llm_service import get_resume_analysis_chain
+        from services.resume_service import get_resume_text
+        from services.llm_service import get_resume_analysis_chain, invoke_chain_with_retry
 
         resume = (
             Resume.query.filter_by(user_id=_AUTHENTICATED_USER_ID, is_active=True)
@@ -301,9 +301,8 @@ def _analyze_resume_sync() -> str:
                 "source": "cached",
             })
 
-        resume_text = extract_text_from_pdf(resume.file_path)
-        chain = get_resume_analysis_chain()
-        analysis = chain.run(resume=resume_text)
+        resume_text = get_resume_text(resume)
+        analysis = invoke_chain_with_retry(get_resume_analysis_chain(), resume=resume_text)
         return json.dumps({
             "success": True,
             "analysis": analysis,
@@ -315,7 +314,7 @@ def _analyze_resume_sync() -> str:
 def _get_skill_gaps_sync(job_id: int) -> str:
     with flask_app.app_context():
         from models import Resume, JobPosting, JobMatch
-        from services.resume_service import extract_text_from_pdf
+        from services.resume_service import get_resume_text
         from services.llm_service import run_job_matching
 
         resume = (
@@ -347,20 +346,25 @@ def _get_skill_gaps_sync(job_id: int) -> str:
                 "source": "cached",
             })
 
-        resume_text = extract_text_from_pdf(resume.file_path)
-        result = json.loads(run_job_matching(
+        resume_text = get_resume_text(resume)
+        # run_job_matching returns a typed JobMatchResult (Pydantic), not JSON —
+        # access fields directly rather than json.loads() on the object.
+        result = run_job_matching(
             resume=resume_text[:3000],
             job_title=job.title,
             company=job.company,
             job_description=job.description[:1000],
             job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
-        ))
+        )
         return json.dumps({
             "success": True,
             "job_title": job.title,
             "company": job.company,
             "source": "fresh_analysis",
-            **result,
+            "match_score": result.match_score,
+            "matched_skills": result.matched_skills,
+            "skill_gaps": result.skill_gaps,
+            "recommendation": result.recommendation,
         })
 
 
@@ -410,7 +414,7 @@ def _get_recent_job_matches_sync(limit: int) -> str:
 
 def _trigger_job_scout_sync() -> str:
     with flask_app.app_context():
-        from job_scout_agent import JobScoutAgent
+        from jobs.scout_agent import JobScoutAgent
         try:
             agent = JobScoutAgent(flask_app)
             run_id = agent.run_for_user(_AUTHENTICATED_USER_ID, run_type="mcp_triggered")
@@ -426,7 +430,7 @@ def _trigger_job_scout_sync() -> str:
 def _get_active_resume_sync() -> str:
     with flask_app.app_context():
         from models import Resume
-        from services.resume_service import extract_text_from_pdf
+        from services.resume_service import get_resume_text
 
         resume = (
             Resume.query.filter_by(user_id=_AUTHENTICATED_USER_ID, is_active=True)
@@ -435,7 +439,7 @@ def _get_active_resume_sync() -> str:
         )
         if not resume:
             return "No active resume found."
-        return extract_text_from_pdf(resume.file_path)
+        return get_resume_text(resume)
 
 
 def _get_resume_analysis_sync() -> str:

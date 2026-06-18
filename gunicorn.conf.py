@@ -30,5 +30,5 @@ loglevel = "info"
 # ── Post-fork ────────────────────────────────────────────────────────────────
 def post_fork(server, worker):
     """Pre-warm the embedding model in each worker after fork."""
-    from job_utils import get_embeddings
+    from jobs.utils import get_embeddings
     get_embeddings()

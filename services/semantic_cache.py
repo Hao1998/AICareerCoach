@@ -6,6 +6,20 @@ import numpy as np
 from langchain_core.caches import BaseCache
 
 
+# Prompts that must NOT be semantically cached. Job/resume agent prompts embed
+# similarly across different inputs (the resume/job text dominates the vector),
+# and the conversational chat prompt is dominated by a large, identical system
+# prompt — both cause false cache hits that return another request's answer.
+# These are cached at the DB level instead (or not at all, for chat).
+DEFAULT_BYPASS_PREFIXES = [
+    "You are the Job Analyst Agent",       # JobAnalystAgent system prompt
+    "You are the Resume Tailoring Agent",  # ResumeTailoringAgent system prompt
+    "Role: You are an AI Career Coach creating personalized interview",  # roadmap
+    "You are a senior career coach",
+    "<trusted_instructions>",               # conversational chat system prompt
+]
+
+
 class SemanticCache(BaseCache):
     def __init__(self, embedding_model=None, score_threshold: float = 0.90,
                  max_size: int = 500, ttl_seconds: int = 3600,
@@ -20,7 +34,7 @@ class SemanticCache(BaseCache):
 
     def _get_embed(self):
         if self._embed is None:
-            from job_utils import get_embeddings
+            from jobs.utils import get_embeddings
             self._embed = get_embeddings()
         return self._embed
 

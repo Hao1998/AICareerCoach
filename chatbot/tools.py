@@ -88,7 +88,7 @@ def build_tools(app, user_id, progress_cb=None):
     def find_top_jobs(query: str) -> str:
         """Find the top matching jobs for the user based on their resume and the chat request. Use this when the user asks to find jobs, get job recommendations, or match their resume to jobs. The query parameter is exactly what the user said — include location, seniority, job type, and count if they mentioned them."""
         with app.app_context():
-            from job_utils import cosine_similarity
+            from jobs.utils import cosine_similarity
             from services.llm_service import run_job_search_planning
 
             resume = Resume.query.filter_by(

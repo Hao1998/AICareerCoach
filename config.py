@@ -25,6 +25,19 @@ class Config:
     }
     REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
+    # Celery — decouples the Job Scout from the web process. When USE_CELERY is
+    # true the scheduled scout runs via Celery Beat (run a worker + beat process)
+    # instead of in-process APScheduler. Defaults off so dev works with no broker.
+    USE_CELERY = os.environ.get('USE_CELERY', 'false').lower() == 'true'
+    CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL') or REDIS_URL
+    CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND') or REDIS_URL
+    CELERY_CONFIG = {
+        'task_acks_late': True,
+        'worker_prefetch_multiplier': 1,
+        'task_default_queue': 'scout',
+        'timezone': 'UTC',
+    }
+
     # API Keys (optional for migrations)
     XAI_API_KEY = os.environ.get('XAI_API_KEY')
     ADZUNA_APP_ID = os.environ.get('ADZUNA_APP_ID')

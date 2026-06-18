@@ -8,7 +8,7 @@ No Flask routes here — pure business logic.
 import logging
 
 from langchain_core.prompts import PromptTemplate
-from langchain_classic.chains import LLMChain
+from langchain_core.output_parsers import StrOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from openai import RateLimitError, APITimeoutError, APIConnectionError, InternalServerError
 from schemas.output_schemas import JobMatchResult, KeywordExtractionResult, ResumeTailoringResult
@@ -130,7 +130,8 @@ def get_resume_analysis_chain():
     """Get or create resume analysis chain"""
     global _resume_analysis_chain
     if _resume_analysis_chain is None:
-        _resume_analysis_chain = LLMChain(llm=get_llm(), prompt=_resume_prompt)
+        # LCEL: prompt | model | parser — invoke(dict) returns a plain str.
+        _resume_analysis_chain = _resume_prompt | get_llm() | StrOutputParser()
     return _resume_analysis_chain
 
 
@@ -221,7 +222,8 @@ def get_preparation_roadmap_chain():
     """Get or create preparation roadmap chain"""
     global _preparation_roadmap_chain
     if _preparation_roadmap_chain is None:
-        _preparation_roadmap_chain = LLMChain(llm=get_llm(), prompt=_preparation_roadmap_prompt)
+        # LCEL: prompt | model | parser — invoke(dict) returns a plain str.
+        _preparation_roadmap_chain = _preparation_roadmap_prompt | get_llm() | StrOutputParser()
     return _preparation_roadmap_chain
 
 
