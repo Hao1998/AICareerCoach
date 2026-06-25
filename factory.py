@@ -43,6 +43,32 @@ limiter = Limiter(
 )
 
 
+def _is_sqlite(application) -> bool:
+    uri = application.config.get("SQLALCHEMY_DATABASE_URI", "")
+    return uri.startswith("sqlite")
+
+
+def _register_sqlite_vec(application):
+    """Load the sqlite-vec extension on every new DBAPI connection (SQLite only)."""
+    if not _is_sqlite(application):
+        return
+    try:
+        import sqlite_vec
+        from sqlalchemy import event
+
+        with application.app_context():
+            engine = application.extensions['sqlalchemy'].engine
+
+        @event.listens_for(engine, "connect")
+        def _load_vec(dbapi_conn, _record):
+            dbapi_conn.enable_load_extension(True)
+            sqlite_vec.load(dbapi_conn)
+            dbapi_conn.enable_load_extension(False)
+
+    except ImportError:
+        application.logger.warning("sqlite-vec not installed; memory ANN search unavailable")
+
+
 def create_app(config_name='default', skip_api_check=False):
     """
     Create and configure the Flask application.
@@ -79,6 +105,7 @@ def create_app(config_name='default', skip_api_check=False):
 
     # ── Extensions ────────────────────────────────────────────────────────────
     db.init_app(app)
+    _register_sqlite_vec(app)
     migrate.init_app(app, db)
     login_manager.init_app(app)
     limiter.init_app(app)
