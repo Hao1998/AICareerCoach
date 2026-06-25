@@ -11,9 +11,29 @@ Also handles explicit preference extraction from conversation text.
 
 import json
 import logging
+import struct
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional
+
+# _USE_VEC is True when sqlite-vec is installed. Monkeypatched to False in
+# tests that exercise the cosine fallback path.
+_USE_VEC = False
+try:
+    import sqlite_vec as _sqlite_vec  # noqa: F401
+    _USE_VEC = True
+except ImportError:
+    pass
+
+
+def _get_embeddings_for_memory():
+    """Thin wrapper so tests can monkeypatch without touching jobs.utils."""
+    from jobs.utils import get_embeddings
+    return get_embeddings()
+
+
+def _serialize_f32(floats: list) -> bytes:
+    return struct.pack(f"{len(floats)}f", *floats)
 
 from langsmith import traceable
 
@@ -259,12 +279,109 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
             logger.info("Indexed %d memory chunks for user %s", len(chunks_to_index), user_id)
         except Exception as e:
             logger.error("Failed to commit memory chunks: %s", e)
+            return  # nothing to vec-index if commit failed
+
+        if _USE_VEC:
+            _sync_chunks_to_vec(app)
+
+
+def _sync_chunks_to_vec(app):
+    """Insert any UserMemoryChunk rows missing from vec_user_memories."""
+    from sqlalchemy import text
+
+    engine = app.extensions['sqlalchemy'].engine
+    try:
+        with engine.connect() as conn:
+            missing = conn.execute(text(
+                "SELECT c.id, c.embedding "
+                "FROM user_memory_chunks c "
+                "LEFT JOIN vec_user_memories v ON v.rowid = c.id "
+                "WHERE c.embedding IS NOT NULL AND v.rowid IS NULL"
+            )).fetchall()
+
+            for row_id, embedding_json in missing:
+                if not isinstance(embedding_json, list):
+                    continue
+                conn.execute(
+                    text("INSERT INTO vec_user_memories(rowid, embedding) VALUES (:rid, :emb)"),
+                    {"rid": row_id, "emb": _serialize_f32(embedding_json)}
+                )
+            conn.commit()
+            if missing:
+                logger.info("Synced %d new memory chunks to vec table", len(missing))
+    except Exception as e:
+        logger.error("Failed to sync memory chunks to vec table: %s", e)
 
 
 def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
-    """Retrieve the most semantically relevant past memories for a given query."""
-    from jobs.utils import get_embeddings as _get_embeddings
+    """Retrieve the most semantically relevant past memories for a given query.
 
+    Uses sqlite-vec ANN when available; falls back to O(n) cosine on Postgres
+    or when sqlite-vec is not installed.
+    """
+    try:
+        query_vec = _get_embeddings_for_memory().embed_query(query)
+    except Exception as e:
+        logger.error("Failed to embed memory search query: %s", e)
+        return "Memory search temporarily unavailable."
+
+    if _USE_VEC:
+        return _search_memories_vec(user_id, query_vec, top_k)
+    return _search_memories_cosine(user_id, query_vec, top_k)
+
+
+def _search_memories_vec(user_id: int, query_vec, top_k: int) -> str:
+    """ANN search via sqlite-vec virtual table."""
+    from sqlalchemy import text
+    from flask import current_app
+
+    engine = current_app.extensions['sqlalchemy'].engine
+    query_bytes = _serialize_f32(list(query_vec))
+
+    try:
+        with engine.connect() as conn:
+            # Fetch top_k*3 candidates globally (vec0 has no user-filter support
+            # in v0.1.x), then filter to this user in Python.
+            rows = conn.execute(
+                text(
+                    "SELECT rowid, distance "
+                    "FROM vec_user_memories "
+                    "WHERE embedding MATCH :q "
+                    "ORDER BY distance "
+                    "LIMIT :lim"
+                ),
+                {"q": query_bytes, "lim": top_k * 3}
+            ).fetchall()
+    except Exception as e:
+        logger.error("sqlite-vec query failed, falling back to cosine: %s", e)
+        return _search_memories_cosine(user_id, query_vec, top_k)
+
+    if not rows:
+        return "No long-term memories found for this user yet."
+
+    candidate_ids = [r[0] for r in rows]
+    distance_by_id = {r[0]: r[1] for r in rows}
+
+    chunks = (UserMemoryChunk.query
+              .filter(UserMemoryChunk.id.in_(candidate_ids))
+              .filter_by(user_id=user_id)
+              .all())
+
+    if not chunks:
+        return "No long-term memories found for this user yet."
+
+    chunks.sort(key=lambda c: distance_by_id.get(c.id, float("inf")))
+    chunks = chunks[:top_k]
+
+    lines = []
+    for chunk in chunks:
+        date_str = chunk.session_date.strftime("%Y-%m-%d") if chunk.session_date else "unknown date"
+        lines.append(f"[{date_str} | {chunk.memory_type}] {chunk.content}")
+    return "\n".join(lines)
+
+
+def _search_memories_cosine(user_id: int, query_vec, top_k: int) -> str:
+    """Legacy O(n) cosine scan — used on Postgres or when sqlite-vec unavailable."""
     chunks = (UserMemoryChunk.query
               .filter_by(user_id=user_id)
               .filter(UserMemoryChunk.embedding.isnot(None))
@@ -274,20 +391,15 @@ def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
     if not chunks:
         return "No long-term memories found for this user yet."
 
-    try:
-        query_embedding = np.array(_get_embeddings().embed_query(query))
-    except Exception as e:
-        logger.error("Failed to embed memory search query: %s", e)
-        return "Memory search temporarily unavailable."
-
+    query_np = np.array(query_vec)
     scored = []
     for chunk in chunks:
         try:
             chunk_vec = np.array(chunk.embedding)
-            similarity = float(np.dot(query_embedding, chunk_vec) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(chunk_vec) + 1e-9
+            sim = float(np.dot(query_np, chunk_vec) / (
+                np.linalg.norm(query_np) * np.linalg.norm(chunk_vec) + 1e-9
             ))
-            scored.append((similarity, chunk))
+            scored.append((sim, chunk))
         except Exception:
             continue
 
@@ -298,10 +410,9 @@ def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
         return "No relevant memories found."
 
     lines = []
-    for score, chunk in top:
+    for _score, chunk in top:
         date_str = chunk.session_date.strftime("%Y-%m-%d") if chunk.session_date else "unknown date"
         lines.append(f"[{date_str} | {chunk.memory_type}] {chunk.content}")
-
     return "\n".join(lines)
 
 
