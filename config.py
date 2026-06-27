@@ -75,6 +75,8 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     WTF_CSRF_ENABLED = False
+    # SQLite in-memory doesn't support connection pool args; clear them.
+    SQLALCHEMY_ENGINE_OPTIONS = {}
 
 # Configuration dictionary
 config = {
