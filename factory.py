@@ -270,15 +270,46 @@ def create_app(config_name='default', skip_api_check=False):
         else:
             app.extensions['scheduler'] = init_scheduler(app, JobScoutAgent)
 
-        _validate_api_keys(app)
+    _validate_config(app, skip_api_check)
 
     return app
 
 
-def _validate_api_keys(app):
-    """Raise if required API keys are missing"""
+def _validate_config(app, skip_api_check=False):
+    """Fail fast on insecure or missing configuration.
+
+    The SECRET_KEY check runs on every real startup — including the production
+    gunicorn entry point (wsgi.py) which passes skip_api_check=True — because a
+    default/blank signing key lets anyone forge session cookies. API-key checks
+    stay gated behind skip_api_check so `flask db migrate` can run without them.
+    """
+    is_production = not app.config.get('DEBUG') and not app.config.get('TESTING')
+
+    if is_production:
+        secret = app.config.get('SECRET_KEY')
+        if not secret or secret == 'dev-secret-key-change-in-production':
+            raise RuntimeError(
+                "SECRET_KEY must be set to a secure random value in production. "
+                "The default development key allows session-cookie forgery. "
+                "Set the SECRET_KEY environment variable."
+            )
+
+    if skip_api_check:
+        return
+
     if not app.config.get('XAI_API_KEY'):
         raise RuntimeError(
             "XAI_API_KEY environment variable is not set. "
             "Please set it in your environment or .env file."
         )
+
+    # Adzuna powers job fetching. Hard-fail in production; warn in development
+    # so contributors can work on non-job features without the credentials.
+    adzuna_missing = [
+        k for k in ('ADZUNA_APP_ID', 'ADZUNA_APP_KEY') if not app.config.get(k)
+    ]
+    if adzuna_missing:
+        msg = f"Adzuna credentials not set: {', '.join(adzuna_missing)}"
+        if is_production:
+            raise RuntimeError(msg + " — required in production for job fetching.")
+        app.logger.warning("%s — Adzuna job fetching will fail until they are set.", msg)

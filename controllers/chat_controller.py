@@ -5,6 +5,8 @@ Handles Career Coach AI chatbot endpoints and the chat widget.
 Blueprint: 'chat'
 """
 
+import logging
+
 from flask import Blueprint, request, render_template, jsonify, current_app
 from flask_login import login_required, current_user
 from flask_limiter.errors import RateLimitExceeded
@@ -17,6 +19,8 @@ from schemas.request_schemas import ChatMessageRequest
 from schemas.validate import validate_json
 
 chat_bp = Blueprint('chat', __name__)
+
+logger = logging.getLogger(__name__)
 
 
 @chat_bp.errorhandler(RateLimitExceeded)
@@ -55,8 +59,9 @@ def chat_api(validated: ChatMessageRequest):
             "intent": result.get("intent"),
             "action_data": result.get("action_data")
         })
-    except Exception as e:
-        return jsonify({"success": False, "error": f"Chat error: {str(e)}"}), 500
+    except Exception:
+        logger.exception("Chat request failed for user %s", current_user.id)
+        return jsonify({"success": False, "error": "Something went wrong processing your message. Please try again."}), 500
 
 
 @chat_bp.route('/api/chat/history', methods=['GET'])

@@ -91,3 +91,30 @@ def test_non_chat_prompt_is_still_cached():
     assert cache.lookup(prompt, "llm") is None
     cache.update(prompt, "llm", "RESP")
     assert cache.lookup(prompt, "llm") == "RESP"
+
+
+def test_resume_analysis_prompt_is_bypassed():
+    """Resume-analysis prompts must bypass the cache.
+
+    The resume text dominates the embedding, so two distinct resumes can collide
+    above the 0.90 threshold and return one user's summary to another (privacy
+    leak). The resume-summary prompt prefix is on the bypass list to prevent this.
+    """
+    from services.llm_service import _resume_summary_template
+
+    # An embedder that returns the SAME vector for everything — worst case, forces
+    # a cache hit unless the prompt is bypassed.
+    class ConstEmb:
+        def embed_query(self, text):
+            return [1.0, 0.0, 0.0]
+
+    cache = SemanticCache(embedding_model=ConstEmb(), bypass_prefixes=DEFAULT_BYPASS_PREFIXES)
+
+    prompt_a = json.dumps([{"kwargs": {"content": _resume_summary_template.format(
+        resume="Alice — senior data scientist, PhD, 10 years experience.")}}])
+    prompt_b = json.dumps([{"kwargs": {"content": _resume_summary_template.format(
+        resume="Bob — junior frontend developer, bootcamp grad, 1 year.")}}])
+
+    cache.update(prompt_a, "llm", "ALICE_SUMMARY")
+    # Even with an identical embedding, Bob must NOT receive Alice's summary.
+    assert cache.lookup(prompt_b, "llm") is None
