@@ -15,6 +15,10 @@ DEFAULT_BYPASS_PREFIXES = [
     "You are the Job Analyst Agent",       # JobAnalystAgent system prompt
     "You are the Resume Tailoring Agent",  # ResumeTailoringAgent system prompt
     "Role: You are an AI Career Coach creating personalized interview",  # roadmap
+    "Role: You are an AI Career Coach.",   # resume-analysis chain — resume text
+                                           # dominates the embedding, so distinct
+                                           # resumes collide above threshold and
+                                           # leak one user's summary to another.
     "You are a senior career coach",
     "<trusted_instructions>",               # conversational chat system prompt
 ]

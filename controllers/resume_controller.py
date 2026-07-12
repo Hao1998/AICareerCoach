@@ -7,6 +7,7 @@ Blueprint: 'resume'
 
 import os
 import json
+import logging
 from datetime import datetime
 
 import magic
@@ -31,6 +32,8 @@ from schemas.request_schemas import RoadmapRequest
 from schemas.validate import validate_json
 
 resume_bp = Blueprint('resume', __name__)
+
+logger = logging.getLogger(__name__)
 
 
 @resume_bp.errorhandler(RateLimitExceeded)
@@ -191,8 +194,9 @@ def find_matching_jobs_endpoint():
                                user=current_user)
     except RETRYABLE_ERRORS:
         return jsonify({"error": "Our AI service is temporarily unavailable. Please try again in a few minutes."}), 503
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("find-matching-jobs failed for user %s", current_user.id)
+        return jsonify({"error": "Could not find matching jobs right now. Please try again."}), 500
 
 
 @resume_bp.route('/api/prepare-roadmap', methods=['POST'])
@@ -257,7 +261,9 @@ def prepare_roadmap(validated: RoadmapRequest):
 
     except RETRYABLE_ERRORS:
         return jsonify({"success": False, "error": "Our AI service is temporarily unavailable. Please try again in a few minutes."}), 503
-    except json.JSONDecodeError as e:
-        return jsonify({"success": False, "error": f"Failed to parse roadmap: {str(e)}"}), 500
-    except Exception as e:
-        return jsonify({"success": False, "error": f"Error generating roadmap: {str(e)}"}), 500
+    except json.JSONDecodeError:
+        logger.exception("Roadmap JSON parse failed for user %s, job %s", current_user.id, validated.job_id)
+        return jsonify({"success": False, "error": "Failed to generate a valid roadmap. Please try again."}), 500
+    except Exception:
+        logger.exception("Roadmap generation failed for user %s", current_user.id)
+        return jsonify({"success": False, "error": "Error generating roadmap. Please try again."}), 500
