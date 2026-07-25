@@ -64,7 +64,14 @@ def handle_chat_message(data):
 
     user_id = current_user.id
 
-    if not acquire_stream_slot(user_id):
+    try:
+        slot_acquired = acquire_stream_slot(user_id)
+    except Exception:
+        logger.exception("Redis unavailable while acquiring stream slot for user %s", user_id)
+        emit('error', {'error': 'Chat is temporarily unavailable. Please try again shortly.'})
+        return
+
+    if not slot_acquired:
         emit('error', {'error': 'You already have a message in flight. Wait for it to finish.'})
         return
 
@@ -146,7 +153,10 @@ def handle_chat_message(data):
             logger.exception("WebSocket chat failed for user %s", user_id)
             socketio.emit('error', {'error': str(exc)}, room=sid)
         finally:
-            release_stream_slot(user_id)
+            try:
+                release_stream_slot(user_id)
+            except Exception:
+                logger.exception("Redis unavailable while releasing stream slot for user %s", user_id)
             _cancel_events.pop(user_id, None)
 
     threading.Thread(target=runner, daemon=True).start()
@@ -159,4 +169,7 @@ def handle_cancel():
     cancel_evt = _cancel_events.get(current_user.id)
     if cancel_evt:
         cancel_evt.set()
-    release_stream_slot(current_user.id)
+    try:
+        release_stream_slot(current_user.id)
+    except Exception:
+        logger.exception("Redis unavailable while releasing stream slot for user %s", current_user.id)
