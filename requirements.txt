@@ -461,7 +461,7 @@ pygments==2.20.0
     # via rich
 pyjwt==2.12.1
     # via mcp
-pypdf2==3.0.1
+pypdf==6.14.2
     # via -r requirements.in
 pypdfium2==5.8.0
     # via pdfplumber
@@ -484,6 +484,8 @@ python-socketio==5.16.1
     # via
     #   -r requirements.in
     #   flask-socketio
+pytz==2026.2
+    # via -r requirements.in
 pyyaml==6.0.3
     # via
     #   datasets
