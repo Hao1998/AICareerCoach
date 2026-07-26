@@ -118,7 +118,9 @@ Alarms on: ALB 5xx rate, ECS service unhealthy task count, RDS CPU and free
 storage, Celery queue depth.
 
 ### Route 53 + ACM
-DNS and a free managed TLS certificate terminated at the ALB.
+DNS and a free managed TLS certificate terminated at the ALB. No domain is
+registered yet — see "Decisions" below for what that means for HTTPS and when
+it must be resolved.
 
 ---
 
@@ -281,22 +283,42 @@ requirement.
 1. **pgvector migration** — job embeddings and memory search, verified by
    `evals/job_match_eval.py` and `evals/memory_eval.py`. Merged and running on
    the current deployment before any AWS work.
-2. **S3 uploads** — with a migration path for existing files in `uploads/`.
-3. **Infrastructure** — VPC, RDS, ElastiCache, S3, Secrets Manager, ECR.
-4. **Staging ECS deployment** — validate the full stack end to end.
-5. **CI/CD pipeline** — automate what step 4 did by hand.
-6. **Production cutover** — data migration from the current SQLite database to
-   RDS, then DNS.
+2. **S3 uploads** — no back-fill needed; this is a fresh start.
+3. **Terraform backend bootstrap** — S3 state bucket and DynamoDB lock table.
+4. **Infrastructure** — VPC, RDS, ElastiCache, S3, Secrets Manager, ECR.
+5. **Staging ECS deployment** — validate the full stack end to end, ALB locked
+   to known source IPs while it is HTTP-only.
+6. **CI/CD pipeline** — automate what step 5 did by hand.
+7. **Domain + HTTPS** — register in Route 53, issue the ACM certificate, and
+   move the ALB to an HTTPS listener with an HTTP redirect.
+8. **Production** — `flask db upgrade` against an empty RDS instance, then DNS.
 
 Steps 1 and 2 are ordinary application work and carry the most risk; the AWS
-steps are largely mechanical once they land.
+steps are largely mechanical once they land. Step 7 gates any public launch.
 
 ---
 
-## Open questions for implementation
+## Decisions
 
-- Does an existing production SQLite database need migrating to RDS, or is this
-  a fresh start? This determines whether step 6 needs a data migration script.
-- Is there a domain name already registered, and is it in Route 53?
-- Terraform, AWS CDK, or console-first? Infrastructure-as-code is recommended
-  for reproducibility across staging and production, but adds up-front work.
+**Fresh start — no data migration.** There is no production SQLite database to
+carry over. The production cutover is `flask db upgrade` against an empty RDS
+instance, and step 2's "migration path for existing files in `uploads/`" is
+dropped. This removes the riskiest part of the rollout.
+
+**No domain yet.** The ALB's own DNS name
+(`<name>-<id>.<region>.elb.amazonaws.com`) is the initial endpoint. This has a
+consequence worth stating up front: **an ALB hostname cannot have an ACM
+certificate attached, so there is no HTTPS until a domain exists.** Running the
+chat interface — including login and resume uploads — over plain HTTP is not
+acceptable beyond a private test.
+
+Registering a domain is therefore a prerequisite for anything user-facing, not
+an optional polish step. It can be registered through Route 53 in minutes and
+costs roughly $12–15/year. The plan will provision Route 53 and ACM as normal
+and leave the hostname as the single value to fill in; until then, the staging
+ALB should be restricted to known source IPs via its security group.
+
+**Terraform.** Infrastructure lives in `infra/` as Terraform, with a `modules/`
+directory for the shared building blocks and `envs/staging` + `envs/production`
+composing them with different sizing. State goes in an S3 backend with DynamoDB
+locking — created once by hand, since the backend cannot bootstrap itself.
