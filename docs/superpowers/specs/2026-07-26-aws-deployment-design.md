@@ -153,9 +153,21 @@ memory chunks, with an explicit fallback:
 
 > "Uses sqlite-vec ANN when available; falls back to O(n) cosine on Postgres"
 
-Moving to RDS therefore does not break memory search, but it silently degrades
-it to a linear scan that grows with every stored memory. On SQLite this path was
-never the hot one; on Postgres it becomes the only one.
+Moving to RDS therefore does not break memory search — results stay correct —
+but it silently degrades every lookup to a linear scan. The fallback filters by
+`user_id` before scanning (`chatbot/memory.py:384`), so the cost grows with a
+*single user's* memory count rather than the size of the whole table. A user
+with tens of memories will not notice; a long-tenured heavy user with thousands
+will, as gradually increasing chat latency with no error to trace it to. On
+SQLite this path was never the hot one; on Postgres it becomes the only one.
+
+`pgvector` also fixes a correctness weakness in the current SQLite fast path:
+`_search_memories_vec` retrieves the `top_k * 3` nearest chunks globally and
+only then filters to the requesting user (`chatbot/memory.py:346`), because
+vec0 v0.1.x cannot filter inside the index. As the user base grows, a user's
+own relevant memories can be crowded out of the candidate set by other users'
+chunks and never surface. pgvector supports filtered index scans, so the
+user predicate applies before the top-k cut.
 
 **Decision:** port memory chunk search to `pgvector` in the same pass. The
 `vec_user_memories` virtual table and its migration
@@ -192,7 +204,7 @@ right choice and needs no change.
 | Change | File(s) | Why |
 |---|---|---|
 | Job embeddings → pgvector | `jobs/utils.py`, `services/job_service.py` | FAISS on local disk cannot be shared across tasks |
-| Memory search → pgvector | `chatbot/memory.py` | Avoids O(n) fallback scan on Postgres |
+| Memory search → pgvector | `chatbot/memory.py` | Avoids the O(n) per-user fallback scan on Postgres; also allows filtering by user inside the index |
 | Uploads → S3 | `config.py`, `services/resume_service.py` | Container disk is ephemeral and unshared |
 | `SECRET_KEY` fails closed in prod | `config.py` | Dev default must never reach production |
 | `CHECKPOINT_DB_PATH` → Postgres DSN | env config only | LangGraph checkpoints must survive restarts; already supported |
