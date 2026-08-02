@@ -172,13 +172,51 @@ def invalidate_bm25_index():
         pass
 
 
-def build_job_faiss_index():
+class FaissBuildResult:
+    """Result of build_job_faiss_index().
+
+    vectorstore: the built FAISS index, or None when there's no live FAISS
+        index — either because there were zero active jobs with embeddings
+        (job_count == 0), or because we're on PostgreSQL where pgvector, not
+        FAISS, is the real dense-search index (job_count reflects the jobs
+        that were synced into pgvector; can be > 0 with vectorstore None).
+    job_count: number of active jobs with embeddings that were available to
+        index/sync. This is the signal callers should use to distinguish
+        "nothing to build" (job_count == 0, a genuine failure) from "built/
+        synced successfully but there's no FAISS object on this backend"
+        (job_count > 0, vectorstore None, still a success).
+
+    Truthy iff job_count > 0, so existing `if build_job_faiss_index():`
+    call sites that only cared about "did this succeed" keep working
+    correctly on SQLite; only code that used the return value AS the
+    vectorstore itself (i.e. it called methods on it) needs the tuple-style
+    unpack — see get_job_faiss_index() below for that pattern.
+    """
+
+    def __init__(self, vectorstore, job_count: int):
+        self.vectorstore = vectorstore
+        self.job_count = job_count
+
+    def __bool__(self):
+        return self.job_count > 0
+
+    def __iter__(self):
+        # Allows `vectorstore, job_count = build_job_faiss_index()`.
+        return iter((self.vectorstore, self.job_count))
+
+
+def build_job_faiss_index() -> FaissBuildResult:
     """Build FAISS index from all active job embeddings for fast similarity search.
 
     On PostgreSQL, pgvector (not FAISS) is the dense-search index — see
     jobs/vector_store.py:dense_search — so the expensive FAISS build below is
     skipped there. sync_job_vectors() still runs first so pgvector stays
     current, and the BM25 index (used by both backends) is still invalidated.
+
+    Returns a FaissBuildResult (see above) rather than a bare vectorstore, so
+    callers can tell "no jobs to index" (job_count == 0) apart from "indexed
+    fine, but this backend doesn't use FAISS" (job_count > 0, vectorstore is
+    None on Postgres).
     """
     global _faiss_cache, _faiss_cache_mtime
     with _index_rebuild_lock:
@@ -188,17 +226,18 @@ def build_job_faiss_index():
         # current at the same points the FAISS index used to be rebuilt.
         sync_job_vectors()
 
+        jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
+        job_count = len(jobs)
+
         from services.pgvector_support import is_postgres
         if is_postgres():
             invalidate_bm25_index()
             logger.info("Skipping FAISS rebuild on PostgreSQL — pgvector is the dense search index")
-            return None
-
-        jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
+            return FaissBuildResult(None, job_count)
 
         if not jobs:
             logger.info("No jobs available to build index")
-            return None
+            return FaissBuildResult(None, 0)
 
         job_texts = [job.get_job_text() for job in jobs]
         job_embeddings_list = [job.embedding for job in jobs]
@@ -222,7 +261,7 @@ def build_job_faiss_index():
 
         invalidate_bm25_index()
 
-        return vectorstore
+        return FaissBuildResult(vectorstore, job_count)
 
 
 def get_job_faiss_index():
@@ -232,7 +271,7 @@ def get_job_faiss_index():
     index_path = os.path.join(JOB_VECTOR_INDEX, "index.faiss")
 
     if not os.path.exists(index_path):
-        return build_job_faiss_index()
+        return build_job_faiss_index().vectorstore
 
     current_mtime = os.path.getmtime(index_path)
 
@@ -250,7 +289,7 @@ def get_job_faiss_index():
             return _faiss_cache
         except Exception as e:
             logger.error("Failed to load FAISS index: %s", e)
-            return build_job_faiss_index()
+            return build_job_faiss_index().vectorstore
 
 
 def cosine_similarity(vec1, vec2):

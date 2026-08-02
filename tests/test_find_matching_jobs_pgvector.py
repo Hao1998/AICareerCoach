@@ -97,17 +97,24 @@ def test_find_matching_jobs_reaches_pgvector_not_faiss(pg_app, monkeypatch):
 
 @pytest.mark.postgres
 def test_find_matching_jobs_dense_dispatch_does_not_use_thread_pool(pg_app, monkeypatch):
-    """The dense-search stage must resolve is_postgres()/dense_search() on the
-    request greenlet directly, not via _run_in_thread — dispatching through a
-    real OS thread loses Flask app context and is exactly what caused the
-    original bug."""
+    """The dense-search SQL query itself must resolve is_postgres()/
+    dense_search() on the request greenlet directly, not via _run_in_thread —
+    dispatching the whole call through a real OS thread loses Flask app
+    context and is exactly what caused the original bug.
+
+    N2 regression: the query embedding IS CPU-bound (a sentence-transformers
+    forward pass) and must go through _run_in_thread — only the embedding
+    step, not the SQL query or dense_search() itself."""
     with pg_app.app_context():
         _add_job()
 
         from jobs.utils import sync_job_vectors
         sync_job_vectors()
 
-        monkeypatch.setattr("jobs.vector_store._embed_query", lambda text: _vec(0.1))
+        def _fake_embed_query(text):
+            return _vec(0.1)
+
+        monkeypatch.setattr("jobs.vector_store._embed_query", _fake_embed_query)
         monkeypatch.setattr("services.job_service.run_job_matching", lambda **kw: _FakeMatchResult())
 
         import services.job_service as job_service_module
@@ -127,3 +134,7 @@ def test_find_matching_jobs_dense_dispatch_does_not_use_thread_pool(pg_app, monk
         assert results, "expected at least one match"
         assert "dense_search" not in thread_dispatched_fns
         assert "_dense_search_faiss_threaded" not in thread_dispatched_fns
+        assert "_fake_embed_query" in thread_dispatched_fns, (
+            "the CPU-bound query embedding must be dispatched via "
+            "_run_in_thread, not run directly on the gevent request greenlet"
+        )

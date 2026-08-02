@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
 from jobs.utils import get_embeddings, get_bm25_index, tokenize_for_bm25
+from jobs import vector_store as _vector_store_module
 from jobs.vector_store import dense_search
 from jobs.fetcher import fetch_jobs_from_adzuna
 from jobs.fetchers.registry import fetch_from_sources
@@ -169,12 +170,23 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         # has none and would make is_postgres() (and therefore dense_search)
         # silently and permanently take the FAISS branch on Postgres.
         #
-        # The pgvector query itself is DB I/O, not CPU-bound: gevent's psycopg
-        # driver is already cooperative, so it runs directly on the greenlet
-        # without blocking the event loop. FAISS is a genuine CPU-bound C
-        # extension and still needs the real-thread dispatch.
+        # The pgvector SELECT itself is a fast, indexed DB query — blocking
+        # on it briefly is the same pre-existing tradeoff every other DB call
+        # in this app already makes on the request greenlet; it is not
+        # actually cooperative (psycopg-binary, pinned in requirements.txt,
+        # uses a C waiter that gevent's monkey-patching does not touch), it's
+        # just fast enough not to matter. The embedding itself is the real
+        # CPU-bound cost (a sentence-transformers forward pass) and must not
+        # run on the greenlet, so it's computed on a real OS thread via
+        # _run_in_thread first, and only the resulting vector — plus the SQL
+        # query — runs on the greenlet. Dispatches through the
+        # jobs.vector_store module attribute (not a `from ... import
+        # _embed_query`) so it's the same seam dense_search() itself uses
+        # internally, and so test monkeypatches of
+        # "jobs.vector_store._embed_query" still take effect here.
         if is_postgres():
-            dense_results = dense_search(resume_text, candidate_k)
+            query_vec = _run_in_thread(_vector_store_module._embed_query, resume_text)
+            dense_results = dense_search(resume_text, candidate_k, query_vec=query_vec)
         else:
             dense_results = _run_in_thread(
                 _dense_search_faiss_threaded, app, resume_text, candidate_k

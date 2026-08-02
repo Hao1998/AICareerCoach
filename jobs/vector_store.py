@@ -21,24 +21,34 @@ def _embed_query(query_text: str) -> list:
     return get_embeddings().embed_query(query_text)
 
 
-def dense_search(query_text: str, k: int) -> list[tuple[int, float]]:
-    """Return the k nearest active jobs as (job_id, similarity), best first."""
+def dense_search(query_text: str, k: int, query_vec: list | None = None) -> list[tuple[int, float]]:
+    """Return the k nearest active jobs as (job_id, similarity), best first.
+
+    query_vec: optional pre-computed embedding for query_text. Callers that
+    are running on a gevent request greenlet should embed the query on a
+    real OS thread first (embedding is a CPU-bound sentence-transformers
+    forward pass) and pass the result here, so this function only issues
+    the (I/O) SQL query on the greenlet. If omitted, the query is embedded
+    internally via _embed_query — used by callers that already run on a
+    real thread with app context (e.g. jobs/scout_agent.py) and by tests.
+    """
     if k <= 0:
         return []
     if is_postgres():
-        return _dense_search_pgvector(query_text, k)
+        return _dense_search_pgvector(query_text, k, query_vec)
     return _dense_search_faiss(query_text, k)
 
 
-def _dense_search_pgvector(query_text: str, k: int) -> list[tuple[int, float]]:
+def _dense_search_pgvector(query_text: str, k: int, query_vec: list | None = None) -> list[tuple[int, float]]:
     from sqlalchemy import text
     from models import db
 
-    try:
-        query_vec = _embed_query(query_text)
-    except Exception as e:
-        logger.error("Failed to embed job search query: %s", e)
-        return []
+    if query_vec is None:
+        try:
+            query_vec = _embed_query(query_text)
+        except Exception as e:
+            logger.error("Failed to embed job search query: %s", e)
+            return []
 
     try:
         rows = db.session.execute(
@@ -52,6 +62,13 @@ def _dense_search_pgvector(query_text: str, k: int) -> list[tuple[int, float]]:
             {"qvec": to_vector_literal(query_vec), "k": k},
         ).fetchall()
     except Exception as e:
+        # On SQLite this genuinely falls back to a live FAISS index. On
+        # Postgres there is no FAISS index to fall back to (get_job_faiss_index()
+        # / build_job_faiss_index() return None there post-migration), so
+        # _dense_search_faiss() just returns [] here — this is effectively a
+        # fallback to an empty dense result, which then makes the caller
+        # (find_matching_jobs) drop through to find_matching_jobs_old's
+        # brute-force path, not a real FAISS search.
         logger.error("pgvector job search failed, falling back to FAISS: %s", e)
         db.session.rollback()
         return _dense_search_faiss(query_text, k)

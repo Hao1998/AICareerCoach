@@ -168,9 +168,16 @@ def view_job(job_id):
 def rebuild_job_index():
     try:
         updated_count = compute_all_job_embeddings()
-        vectorstore = build_job_faiss_index()
+        result = build_job_faiss_index()
 
-        if vectorstore:
+        # result.job_count is the number of active, embedded jobs that were
+        # available to index/sync. On SQLite that's paired with a live FAISS
+        # vectorstore; on PostgreSQL there's no vectorstore object (pgvector
+        # is the real index there — see build_job_faiss_index()'s docstring),
+        # but job_count > 0 still means the rebuild/sync genuinely succeeded.
+        # Only job_count == 0 (a truly empty jobs table) is the failure case,
+        # on either backend.
+        if result:
             total_jobs = JobPosting.query.filter_by(is_active=True).count()
             return jsonify({"success": True,
                             "message": f"Successfully rebuilt job index with {total_jobs} jobs",
