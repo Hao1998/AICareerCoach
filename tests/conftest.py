@@ -59,3 +59,13 @@ def pg_app(monkeypatch):
         yield application
         db.session.remove()
         db.drop_all()
+
+
+@pytest.fixture
+def app_sqlite():
+    application = create_app('test', skip_api_check=True)
+    with application.app_context():
+        db.create_all()
+        yield application
+        db.session.remove()
+        db.drop_all()

@@ -281,8 +281,45 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
             logger.error("Failed to commit memory chunks: %s", e)
             return  # nothing to vec-index if commit failed
 
-        if _USE_VEC:
+        with app.app_context():
+            from services.pgvector_support import is_postgres
+            _is_pg = is_postgres()
+        if _is_pg:
+            _sync_chunks_to_pgvector(app)
+        elif _USE_VEC:
             _sync_chunks_to_vec(app)
+
+
+def _sync_chunks_to_pgvector(app) -> int:
+    """Copy JSON embeddings into user_memory_chunks.embedding_vec.
+
+    Memory chunks are append-only, so a missing vector is the only condition
+    that needs handling — the same semantics as _sync_chunks_to_vec.
+
+    Returns the number of rows updated; 0 on non-PostgreSQL engines.
+    """
+    from sqlalchemy import text
+
+    with app.app_context():
+        from services.pgvector_support import is_postgres
+        if not is_postgres():
+            return 0
+
+        engine = app.extensions['sqlalchemy'].engine
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "UPDATE user_memory_chunks "
+                    "SET embedding_vec = CAST(embedding::text AS vector) "
+                    "WHERE embedding IS NOT NULL AND embedding_vec IS NULL"
+                ))
+                conn.commit()
+                if result.rowcount:
+                    logger.info("Synced %d memory chunks to pgvector", result.rowcount)
+                return result.rowcount
+        except Exception as e:
+            logger.error("Failed to sync memory chunks to pgvector: %s", e)
+            return 0
 
 
 def _sync_chunks_to_vec(app):

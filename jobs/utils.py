@@ -77,6 +77,39 @@ def compute_all_job_embeddings():
     return updated_count
 
 
+def sync_job_vectors() -> int:
+    """Copy JSON embeddings into the native pgvector column.
+
+    Set-based: one UPDATE, no Python loop. Rows are refreshed when the vector
+    is missing or when embedding_updated_at has moved past the value recorded
+    at the last sync, so re-fetched jobs pick up new embeddings.
+
+    Returns the number of rows updated; 0 on non-PostgreSQL engines.
+    """
+    from services.pgvector_support import is_postgres
+    if not is_postgres():
+        return 0
+
+    from sqlalchemy import text
+    try:
+        result = db.session.execute(text(
+            "UPDATE job_postings "
+            "SET embedding_vec = CAST(embedding::text AS vector), "
+            "    embedding_vec_updated_at = embedding_updated_at "
+            "WHERE embedding IS NOT NULL "
+            "  AND (embedding_vec IS NULL "
+            "       OR embedding_vec_updated_at IS DISTINCT FROM embedding_updated_at)"
+        ))
+        db.session.commit()
+        if result.rowcount:
+            logger.info("Synced %d job embeddings to pgvector", result.rowcount)
+        return result.rowcount
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Failed to sync job vectors: %s", e)
+        return 0
+
+
 def build_bm25_index():
     """Build in-memory BM25 index from all active jobs. Persist to Redis for fast recovery."""
     global _bm25_cache
@@ -142,6 +175,10 @@ def build_job_faiss_index():
     global _faiss_cache, _faiss_cache_mtime
     with _index_rebuild_lock:
         compute_all_job_embeddings()
+
+        # On PostgreSQL the pgvector column is the real search index; keep it
+        # current at the same points the FAISS index is rebuilt.
+        sync_job_vectors()
 
         jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
 
