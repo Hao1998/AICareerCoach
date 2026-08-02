@@ -280,9 +280,9 @@ requirement.
 
 ## Rollout sequence
 
-1. **pgvector migration** — job embeddings and memory search, verified by
-   `evals/job_match_eval.py` and `evals/memory_eval.py`. Merged and running on
-   the current deployment before any AWS work.
+1. ~~**pgvector migration**~~ — **done.** Job embeddings and memory search now
+   run on pgvector when the engine is PostgreSQL, verified by
+   `evals/job_match_eval.py`, `evals/memory_eval.py`, and a Postgres CI job.
 2. **S3 uploads** — no back-fill needed; this is a fresh start.
 3. **Terraform backend bootstrap** — S3 state bucket and DynamoDB lock table.
 4. **Infrastructure** — VPC, RDS, ElastiCache, S3, Secrets Manager, ECR.

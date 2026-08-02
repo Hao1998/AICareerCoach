@@ -16,7 +16,8 @@ AI-powered career coaching platform. Users upload resumes, get LLM-driven analys
 | MCP server | `python mcp_server.py` |
 | Celery worker | `celery -A celery_worker.celery worker --loglevel=info -Q scout` |
 | Celery beat | `celery -A celery_worker.celery beat --loglevel=info` |
-| Unit tests | `python -m pytest` (32 tests, no API key needed) |
+| Unit tests | `python -m pytest` (no API key needed; pgvector tests skip without `TEST_DATABASE_URL`) |
+| Unit tests (Postgres path) | `docker compose up -d postgres` then `TEST_DATABASE_URL=postgresql+psycopg://careercoach:localdev@localhost:5432/careercoach python -m pytest` |
 
 **Required env vars before starting:**
 
@@ -128,6 +129,8 @@ Celery worker tasks also need `with app.app_context():` — they run in a separa
 | Request validation | `schemas/request_schemas.py` |
 | Structured LLM output schemas | `schemas/output_schemas.py` |
 | Prompt injection guard | `services/input_guard.py` |
+| Job dense retrieval (pgvector / FAISS) | `jobs/vector_store.py` |
+| pgvector dialect helpers | `services/pgvector_support.py` |
 
 ---
 
@@ -282,3 +285,8 @@ Evals must pass before merging any change that touches the logic above.
 - **Structured output only.** LLM responses that feed application logic must go through Pydantic schemas via `with_structured_output()`. Free-text parsing is banned.
 - **Semantic cache bypass list.** Job-specific, resume-specific, and conversational chat prompts must stay in `services/semantic_cache.py`'s `DEFAULT_BYPASS_PREFIXES` list (single source of truth, imported by `factory.py`). Chat prompts in particular must bypass because identical system prompts cause different user messages to collide in the cache, producing wrong answers and silent "(no response)" in the streaming UI.
 - **`url_for` with blueprint prefix.** Always `url_for('blueprint_name.function_name')` — bare function names will raise `BuildError` at runtime.
+- **Vector columns are not in `models.py`.** `embedding_vec` columns exist only
+  on PostgreSQL, created by raw Alembic DDL and queried with raw SQL. Declaring
+  a pgvector column type in `models.py` breaks `db.create_all()` on SQLite and
+  therefore the entire test suite. The JSON `embedding` columns remain the
+  source of truth; `embedding_vec` is derived.
