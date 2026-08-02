@@ -120,3 +120,58 @@ def test_dense_search_returns_empty_when_no_index(app_sqlite, monkeypatch):
     with app_sqlite.app_context():
         from jobs.vector_store import dense_search
         assert dense_search("anything", k=5) == []
+
+
+@pytest.mark.postgres
+def test_dense_search_pgvector_failure_rolls_back_and_falls_back_to_faiss(pg_app, monkeypatch):
+    """C3 regression: a failed pgvector query must not leave the session's
+    transaction aborted, or the next JobPosting query on the same session
+    raises PendingRollbackError instead of succeeding.
+
+    This is live today via jobs/scout_agent.py, which calls dense_search()
+    directly on a thread that DOES have app context — a failed pgvector
+    query there previously left the session aborted, so the very next
+    JobPosting.query.get(job_id) call in _find_and_save_matches raised
+    PendingRollbackError, failing the whole scout run.
+
+    Uses a malformed vector literal (not a mocked exception) so Postgres
+    itself genuinely aborts the transaction, mirroring
+    tests/test_memory_pgvector_search.py::
+    test_pgvector_search_failure_rolls_back_and_falls_back_to_cosine.
+    """
+    with pg_app.app_context():
+        job = _add_job("fallback job", _vec(0.5))
+
+        from jobs.utils import sync_job_vectors
+        sync_job_vectors()
+
+        monkeypatch.setattr("jobs.vector_store._embed_query", lambda text: _vec(0.5))
+        # Force Postgres to genuinely abort the transaction on a malformed
+        # vector literal, rather than mocking an exception in Python.
+        monkeypatch.setattr("jobs.vector_store.to_vector_literal", lambda vec: "not-a-valid-vector-literal")
+
+        class _FakeDoc:
+            def __init__(self, job_id):
+                self.metadata = {"job_id": job_id}
+
+        class _FakeIndex:
+            class index:
+                ntotal = 1
+
+            def similarity_search_with_score(self, query, k):
+                return [(_FakeDoc(job.id), 0.0)]
+
+        monkeypatch.setattr("jobs.vector_store.get_job_faiss_index", lambda: _FakeIndex())
+
+        from jobs.vector_store import dense_search
+        results = dense_search("anything", k=5)
+
+        # Fallback still returns results without raising.
+        assert [jid for jid, _ in results] == [job.id]
+
+        # The session must not be left in an aborted transaction state --
+        # this would raise sqlalchemy.exc.PendingRollbackError if C3's fix
+        # (db.session.rollback() before the FAISS fallback) regressed.
+        reloaded = JobPosting.query.get(job.id)
+        assert reloaded is not None
+        assert reloaded.title == "fallback job"

@@ -15,7 +15,7 @@ import threading
 from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from services.db_lock import safe_commit
-from jobs.utils import build_job_faiss_index, cosine_similarity
+from jobs.utils import cosine_similarity
 from jobs.vector_store import dense_search
 from pypdf import PdfReader
 import numpy as np

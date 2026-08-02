@@ -1,12 +1,14 @@
 """
-Job Utilities - Shared functions for job embedding and FAISS indexing
+Job Utilities - Shared functions for job embedding, FAISS indexing, and
+pgvector sync.
 
-NOTE (future migration): the FAISS index here is in-process and saved to local
-disk, so it cannot be shared across multiple app instances and must be rebuilt
-per process. This is acceptable for the current single-/few-instance deployment.
-When we scale horizontally, move embeddings into Postgres `pgvector` (already on
-PostgreSQL in prod) so the vector store is shared and concurrent-write safe.
-Tracked as a deliberate follow-up — keep FAISS for now.
+The FAISS index here is in-process and saved to local disk, so it cannot be
+shared across multiple app instances and must be rebuilt per process — this
+remains true on SQLite. On PostgreSQL the shared, concurrent-write-safe
+vector store is pgvector (sync_job_vectors() keeps the native `vector` column
+current); build_job_faiss_index() detects the Postgres backend and skips the
+FAISS build there, since jobs/vector_store.py:dense_search never reads it on
+that backend.
 """
 
 import logging
@@ -171,14 +173,26 @@ def invalidate_bm25_index():
 
 
 def build_job_faiss_index():
-    """Build FAISS index from all active job embeddings for fast similarity search."""
+    """Build FAISS index from all active job embeddings for fast similarity search.
+
+    On PostgreSQL, pgvector (not FAISS) is the dense-search index — see
+    jobs/vector_store.py:dense_search — so the expensive FAISS build below is
+    skipped there. sync_job_vectors() still runs first so pgvector stays
+    current, and the BM25 index (used by both backends) is still invalidated.
+    """
     global _faiss_cache, _faiss_cache_mtime
     with _index_rebuild_lock:
         compute_all_job_embeddings()
 
         # On PostgreSQL the pgvector column is the real search index; keep it
-        # current at the same points the FAISS index is rebuilt.
+        # current at the same points the FAISS index used to be rebuilt.
         sync_job_vectors()
+
+        from services.pgvector_support import is_postgres
+        if is_postgres():
+            invalidate_bm25_index()
+            logger.info("Skipping FAISS rebuild on PostgreSQL — pgvector is the dense search index")
+            return None
 
         jobs = JobPosting.query.filter_by(is_active=True).filter(JobPosting.embedding.isnot(None)).all()
 

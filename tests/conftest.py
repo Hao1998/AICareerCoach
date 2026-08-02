@@ -41,24 +41,30 @@ def pg_app(monkeypatch):
         assert db.engine.dialect.name == 'postgresql', (
             f"pg_app fixture is bound to {db.engine.dialect.name}, not postgresql"
         )
+        # db.create_all() builds every table/column tracked by models.py, which
+        # mirrors the schema as of migration e9e97b70ce4c (the pgvector columns
+        # are deliberately NOT SQLAlchemy model columns — see
+        # services/pgvector_support.py — so create_all() never touches them).
         db.create_all()
-        with db.engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            conn.execute(text(
-                "ALTER TABLE job_postings ADD COLUMN IF NOT EXISTS embedding_vec vector(768)"
-            ))
-            conn.execute(text(
-                "ALTER TABLE job_postings "
-                "ADD COLUMN IF NOT EXISTS embedding_vec_updated_at TIMESTAMP"
-            ))
-            conn.execute(text(
-                "ALTER TABLE user_memory_chunks "
-                "ADD COLUMN IF NOT EXISTS embedding_vec vector(768)"
-            ))
-            conn.commit()
+
+        # Run the real Alembic migration for the pgvector columns/index instead
+        # of hand-rolling the DDL here, so schema drift between this fixture
+        # and migrations/versions/3c81b22b9730_add_pgvector_columns.py (extension
+        # creation, columns, HNSW index) would be caught by the tests rather
+        # than silently diverging. Stamp to the revision create_all() already
+        # matches, then let Alembic apply only the pgvector migration on top —
+        # running the full chain from empty would fail, since earlier
+        # migrations assume their target tables/columns don't exist yet.
+        from flask_migrate import stamp, upgrade
+        stamp(revision='e9e97b70ce4c')
+        upgrade(revision='head')
+
         yield application
         db.session.remove()
         db.drop_all()
+        with db.engine.connect() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+            conn.commit()
 
 
 @pytest.fixture

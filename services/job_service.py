@@ -1,9 +1,9 @@
 """
 Job Service
 
-Handles job matching using FAISS vector search and LLM analysis,
-and the shared Adzuna fetch + config-save logic used by both the
-HTML and JSON fetch endpoints.
+Handles job matching using dense vector search (pgvector on PostgreSQL,
+FAISS on SQLite) and LLM analysis, and the shared Adzuna fetch + config-save
+logic used by both the HTML and JSON fetch endpoints.
 No Flask routes here — pure business logic.
 """
 
@@ -18,6 +18,7 @@ from jobs.utils import get_embeddings, get_bm25_index, tokenize_for_bm25
 from jobs.vector_store import dense_search
 from jobs.fetcher import fetch_jobs_from_adzuna
 from jobs.fetchers.registry import fetch_from_sources
+from services.pgvector_support import is_postgres
 
 # FAISS and HuggingFace embeddings are CPU-bound C extensions that gevent
 # cannot patch. Spawning them on gevent's thread pool hands the blocking work
@@ -135,19 +136,49 @@ def _analyze_job(app, resume_text: str, job: JobPosting, similarity_score: float
     return {"job": job, "similarity_score": similarity_score, "analysis": analysis}
 
 
+def _dense_search_faiss_threaded(app, resume_text: str, candidate_k: int):
+    """Run the FAISS dense-search branch inside a real OS thread, with app context.
+
+    FAISS and the HuggingFace embedding model are CPU-bound C extensions gevent
+    cannot patch, so they need a real thread (see _run_in_thread above). Real
+    threads have no Flask app context, so a cold-start FAISS build (which
+    queries JobPosting) needs one explicitly — same pattern as _analyze_job.
+    """
+    with app.app_context():
+        return dense_search(resume_text, candidate_k)
+
+
 @traceable(run_type="chain", name="job-matching")
 def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
     """
     Three-stage hybrid job matching: dense + sparse retrieval → RRF fusion → LLM analysis.
 
-    Stage 1a (dense):  FAISS vector search — catches semantic similarity.
+    Stage 1a (dense):  vector search (pgvector on Postgres, FAISS on SQLite) — catches
+                        semantic similarity.
     Stage 1b (sparse): BM25 keyword search — catches exact tech-stack matches.
     Stage 1c (fusion): Reciprocal Rank Fusion merges both ranked lists.
     Stage 2 (rerank):  Parallel LLM analysis on the fused top_k candidates.
     """
+    from flask import current_app
+    app = current_app._get_current_object()
+
     try:
         # --- Stage 1a: dense search (pgvector on Postgres, FAISS on SQLite) ---
-        dense_results = _run_in_thread(dense_search, resume_text, candidate_k)
+        # is_postgres() must be resolved here, on the request greenlet (which
+        # has app context) — not inside _run_in_thread's real OS thread, which
+        # has none and would make is_postgres() (and therefore dense_search)
+        # silently and permanently take the FAISS branch on Postgres.
+        #
+        # The pgvector query itself is DB I/O, not CPU-bound: gevent's psycopg
+        # driver is already cooperative, so it runs directly on the greenlet
+        # without blocking the event loop. FAISS is a genuine CPU-bound C
+        # extension and still needs the real-thread dispatch.
+        if is_postgres():
+            dense_results = dense_search(resume_text, candidate_k)
+        else:
+            dense_results = _run_in_thread(
+                _dense_search_faiss_threaded, app, resume_text, candidate_k
+            )
 
         if not dense_results:
             logger.warning("No dense results available, falling back to brute-force")
@@ -195,8 +226,6 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         # Preserve fused ranking order even though futures complete out of order.
         ordered_results = [None] * len(active_candidates)
 
-        from flask import current_app
-        app = current_app._get_current_object()
         with ThreadPoolExecutor(max_workers=_LLM_CONCURRENCY) as pool:
             future_to_idx = {
                 pool.submit(_analyze_job, app, resume_text, job, score): idx

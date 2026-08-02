@@ -1,7 +1,7 @@
 """add vec_user_memories virtual table
 
 Revision ID: e9e97b70ce4c
-Revises: fab454547ed6
+Revises: 0ac7c7de65f0
 Create Date: 2026-06-25 15:41:43.712951
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'e9e97b70ce4c'
-down_revision = 'fab454547ed6'
+down_revision = '0ac7c7de65f0'
 branch_labels = None
 depends_on = None
 

@@ -447,7 +447,12 @@ def _search_memories_pgvector(user_id: int, query_vec, top_k: int) -> str:
         return _search_memories_cosine(user_id, query_vec, top_k)
 
     if not rows:
-        return "No long-term memories found for this user yet."
+        # embedding_vec may simply not be synced yet for this user (no backfill
+        # runs automatically at boot) — that's not the same as "no memories
+        # exist". Fall through to the JSON-embedding cosine scan, which doesn't
+        # depend on embedding_vec being populated, so memories aren't invisible
+        # during the sync gap.
+        return _search_memories_cosine(user_id, query_vec, top_k)
 
     lines = []
     for content, memory_type, session_date in rows:

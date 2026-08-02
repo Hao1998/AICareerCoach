@@ -53,6 +53,7 @@ def _dense_search_pgvector(query_text: str, k: int) -> list[tuple[int, float]]:
         ).fetchall()
     except Exception as e:
         logger.error("pgvector job search failed, falling back to FAISS: %s", e)
+        db.session.rollback()
         return _dense_search_faiss(query_text, k)
 
     # Cosine similarity is -1..1; clamp so callers get a stable 0..1 score.
