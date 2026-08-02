@@ -99,12 +99,20 @@ def test_build_job_faiss_index_reports_success_on_sqlite_with_jobs(app_sqlite, m
                 f.write(b"fake")
 
     with app_sqlite.app_context():
+        import jobs.utils as jobs_utils
+
         _add_job()
         monkeypatch.setattr("jobs.utils.get_embeddings", lambda: _FakeEmbeddings())
         monkeypatch.setattr(
             "jobs.utils.FAISS.from_embeddings",
             staticmethod(lambda **kw: _FakeVectorstore()),
         )
+        # Redirect the on-disk index to a throwaway path and reset the
+        # in-process cache so this test can't pollute the real
+        # job_vector_index/ directory or leak _faiss_cache into later tests.
+        monkeypatch.setattr("jobs.utils.JOB_VECTOR_INDEX", "tests/_scratch_faiss_index")
+        monkeypatch.setattr(jobs_utils, "_faiss_cache", None)
+        monkeypatch.setattr(jobs_utils, "_faiss_cache_mtime", 0)
 
         from jobs.utils import build_job_faiss_index
         result = build_job_faiss_index()
@@ -112,6 +120,11 @@ def test_build_job_faiss_index_reports_success_on_sqlite_with_jobs(app_sqlite, m
         assert result.vectorstore is not None
         assert result.job_count == 1
         assert bool(result) is True
+
+        import shutil
+        shutil.rmtree("tests/_scratch_faiss_index", ignore_errors=True)
+        monkeypatch.setattr(jobs_utils, "_faiss_cache", None)
+        monkeypatch.setattr(jobs_utils, "_faiss_cache_mtime", 0)
 
 
 def test_build_job_faiss_index_reports_failure_on_sqlite_with_no_jobs(app_sqlite):
