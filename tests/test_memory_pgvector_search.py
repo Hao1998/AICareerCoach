@@ -134,3 +134,36 @@ def test_pgvector_search_empty_for_unknown_user(pg_app, monkeypatch):
         )
         from chatbot.memory import search_memories
         assert "No long-term memories" in search_memories(999, "anything", top_k=4)
+
+
+@pytest.mark.postgres
+def test_pgvector_search_failure_rolls_back_and_falls_back_to_cosine(pg_app, monkeypatch):
+    """A failed pgvector query must not leave the session's transaction
+    aborted, or the cosine fallback's own query on the same session raises
+    PendingRollbackError instead of returning results.
+
+    Uses a malformed vector literal (not a mocked exception) so Postgres
+    itself genuinely aborts the transaction, the same way a real invalid
+    cast or connection blip would -- a Python-level mock of db.session.execute
+    would raise without ever touching the DB, so the aborted-transaction
+    state (and therefore this regression) would never actually occur.
+    """
+    with pg_app.app_context():
+        _insert_chunk(1, "fallback chunk", 0.5)
+
+        from chatbot.memory import _sync_chunks_to_pgvector
+        _sync_chunks_to_pgvector(pg_app)
+
+        monkeypatch.setattr(
+            "chatbot.memory._get_embeddings_for_memory",
+            lambda: _fake_embeddings(0.5),
+        )
+        monkeypatch.setattr(
+            "services.pgvector_support.to_vector_literal",
+            lambda vec: "not-a-valid-vector-literal",
+        )
+
+        from chatbot.memory import search_memories
+        result = search_memories(1, "anything", top_k=4)
+
+        assert "fallback chunk" in result

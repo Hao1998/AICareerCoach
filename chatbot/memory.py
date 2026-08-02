@@ -443,6 +443,7 @@ def _search_memories_pgvector(user_id: int, query_vec, top_k: int) -> str:
         ).fetchall()
     except Exception as e:
         logger.error("pgvector memory query failed, falling back to cosine: %s", e)
+        db.session.rollback()
         return _search_memories_cosine(user_id, query_vec, top_k)
 
     if not rows:
