@@ -48,3 +48,6 @@ job_vector_index/
 # Frontend build
 node_modules/
 static/css/app.css
+
+# Superpowers SDD scratch workspace
+.superpowers/
