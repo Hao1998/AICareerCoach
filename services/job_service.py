@@ -14,7 +14,8 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
-from jobs.utils import get_embeddings, get_job_faiss_index, get_bm25_index, tokenize_for_bm25
+from jobs.utils import get_embeddings, get_bm25_index, tokenize_for_bm25
+from jobs.vector_store import dense_search
 from jobs.fetcher import fetch_jobs_from_adzuna
 from jobs.fetchers.registry import fetch_from_sources
 
@@ -145,30 +146,16 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
     Stage 2 (rerank):  Parallel LLM analysis on the fused top_k candidates.
     """
     try:
-        job_index = get_job_faiss_index()
+        # --- Stage 1a: dense search (pgvector on Postgres, FAISS on SQLite) ---
+        dense_results = _run_in_thread(dense_search, resume_text, candidate_k)
 
-        if job_index is None:
-            logger.warning("No job index available, falling back to brute-force")
+        if not dense_results:
+            logger.warning("No dense results available, falling back to brute-force")
             return find_matching_jobs_old(resume_text, top_k)
 
-        # --- Stage 1a: FAISS dense search ---
-        docs_with_scores = _run_in_thread(
-            job_index.similarity_search_with_score,
-            resume_text,
-            k=min(candidate_k, job_index.index.ntotal),
-        )
-
-        dense_ranked = [
-            doc.metadata["job_id"]
-            for doc, _ in docs_with_scores
-            if doc.metadata.get("job_id") is not None
-        ]
-        # Build FAISS score map for use as fallback similarity score in Stage 2
-        faiss_score_map = {
-            doc.metadata["job_id"]: max(0.0, min(1.0, 1 - (dist ** 2 / 2)))
-            for doc, dist in docs_with_scores
-            if doc.metadata.get("job_id") is not None
-        }
+        dense_ranked = [job_id for job_id, _ in dense_results]
+        # Similarity is already normalised 0..1 by the vector store.
+        dense_score_map = dict(dense_results)
 
         # --- Stage 1b: BM25 sparse search ---
         sparse_ranked: list[int] = []
@@ -196,7 +183,7 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             ).all()
         }
         active_candidates = [
-            (jobs_by_id[jid], faiss_score_map.get(jid, 0.5))
+            (jobs_by_id[jid], dense_score_map.get(jid, 0.5))
             for jid in top_fused_ids
             if jid in jobs_by_id
         ]
