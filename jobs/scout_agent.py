@@ -15,7 +15,8 @@ import threading
 from datetime import datetime
 from models import db, User, Resume, JobPosting, JobMatch, AgentConfig, AgentRunHistory
 from services.db_lock import safe_commit
-from jobs.utils import get_job_faiss_index, build_job_faiss_index, cosine_similarity
+from jobs.utils import cosine_similarity
+from jobs.vector_store import dense_search
 from pypdf import PdfReader
 import numpy as np
 from jobs.scout_graph import build_job_scout_graph
@@ -300,11 +301,6 @@ class JobScoutAgent:
         matches_saved = []
 
         try:
-            # Get job index
-            job_index = get_job_faiss_index()
-            if job_index is None:
-                return {'analyzed': [], 'saved': []}
-
             # Get user's learned preferences
             user_config = AgentConfig.query.filter_by(user_id=user_id).first()
             user_preference_vector = np.array(user_config.preference_embedding) if (user_config and user_config.preference_embedding is not None) else None
@@ -316,11 +312,8 @@ class JobScoutAgent:
             else:
                 print(f"Using resume-only matching for user {user_id} (no feedback history yet)")
 
-            # Search for similar jobs using FAISS (Stage 1: Fast retrieval)
-            docs_with_scores = job_index.similarity_search_with_score(
-                resume_text,
-                k=min(20, job_index.index.ntotal)  # Get top 20 candidates
-            )
+            # Stage 1: fast retrieval (pgvector on Postgres, FAISS on SQLite)
+            docs_with_scores = dense_search(resume_text, k=20)
 
             if not docs_with_scores:
                 return {'analyzed': [], 'saved': []}
@@ -328,8 +321,7 @@ class JobScoutAgent:
             # Stage 2: Detailed LLM analysis for candidates
             candidates = docs_with_scores[:max_results * 2]
             total_candidates = len(candidates)
-            for idx, (doc, distance) in enumerate(candidates, 1):
-                job_id = doc.metadata.get("job_id")
+            for idx, (job_id, similarity) in enumerate(candidates, 1):
                 job = JobPosting.query.get(job_id)
 
                 if not job or not job.is_active:

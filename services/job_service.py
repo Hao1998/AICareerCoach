@@ -1,9 +1,9 @@
 """
 Job Service
 
-Handles job matching using FAISS vector search and LLM analysis,
-and the shared Adzuna fetch + config-save logic used by both the
-HTML and JSON fetch endpoints.
+Handles job matching using dense vector search (pgvector on PostgreSQL,
+FAISS on SQLite) and LLM analysis, and the shared Adzuna fetch + config-save
+logic used by both the HTML and JSON fetch endpoints.
 No Flask routes here — pure business logic.
 """
 
@@ -14,9 +14,12 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
-from jobs.utils import get_embeddings, get_job_faiss_index, get_bm25_index, tokenize_for_bm25
+from jobs.utils import get_embeddings, get_bm25_index, tokenize_for_bm25
+from jobs import vector_store as _vector_store_module
+from jobs.vector_store import dense_search
 from jobs.fetcher import fetch_jobs_from_adzuna
 from jobs.fetchers.registry import fetch_from_sources
+from services.pgvector_support import is_postgres
 
 # FAISS and HuggingFace embeddings are CPU-bound C extensions that gevent
 # cannot patch. Spawning them on gevent's thread pool hands the blocking work
@@ -134,41 +137,68 @@ def _analyze_job(app, resume_text: str, job: JobPosting, similarity_score: float
     return {"job": job, "similarity_score": similarity_score, "analysis": analysis}
 
 
+def _dense_search_faiss_threaded(app, resume_text: str, candidate_k: int):
+    """Run the FAISS dense-search branch inside a real OS thread, with app context.
+
+    FAISS and the HuggingFace embedding model are CPU-bound C extensions gevent
+    cannot patch, so they need a real thread (see _run_in_thread above). Real
+    threads have no Flask app context, so a cold-start FAISS build (which
+    queries JobPosting) needs one explicitly — same pattern as _analyze_job.
+    """
+    with app.app_context():
+        return dense_search(resume_text, candidate_k)
+
+
 @traceable(run_type="chain", name="job-matching")
 def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
     """
     Three-stage hybrid job matching: dense + sparse retrieval → RRF fusion → LLM analysis.
 
-    Stage 1a (dense):  FAISS vector search — catches semantic similarity.
+    Stage 1a (dense):  vector search (pgvector on Postgres, FAISS on SQLite) — catches
+                        semantic similarity.
     Stage 1b (sparse): BM25 keyword search — catches exact tech-stack matches.
     Stage 1c (fusion): Reciprocal Rank Fusion merges both ranked lists.
     Stage 2 (rerank):  Parallel LLM analysis on the fused top_k candidates.
     """
-    try:
-        job_index = get_job_faiss_index()
+    from flask import current_app
+    app = current_app._get_current_object()
 
-        if job_index is None:
-            logger.warning("No job index available, falling back to brute-force")
+    try:
+        # --- Stage 1a: dense search (pgvector on Postgres, FAISS on SQLite) ---
+        # is_postgres() must be resolved here, on the request greenlet (which
+        # has app context) — not inside _run_in_thread's real OS thread, which
+        # has none and would make is_postgres() (and therefore dense_search)
+        # silently and permanently take the FAISS branch on Postgres.
+        #
+        # The pgvector SELECT itself is a fast, indexed DB query — blocking
+        # on it briefly is the same pre-existing tradeoff every other DB call
+        # in this app already makes on the request greenlet; it is not
+        # actually cooperative (psycopg-binary, pinned in requirements.txt,
+        # uses a C waiter that gevent's monkey-patching does not touch), it's
+        # just fast enough not to matter. The embedding itself is the real
+        # CPU-bound cost (a sentence-transformers forward pass) and must not
+        # run on the greenlet, so it's computed on a real OS thread via
+        # _run_in_thread first, and only the resulting vector — plus the SQL
+        # query — runs on the greenlet. Dispatches through the
+        # jobs.vector_store module attribute (not a `from ... import
+        # _embed_query`) so it's the same seam dense_search() itself uses
+        # internally, and so test monkeypatches of
+        # "jobs.vector_store._embed_query" still take effect here.
+        if is_postgres():
+            query_vec = _run_in_thread(_vector_store_module._embed_query, resume_text)
+            dense_results = dense_search(resume_text, candidate_k, query_vec=query_vec)
+        else:
+            dense_results = _run_in_thread(
+                _dense_search_faiss_threaded, app, resume_text, candidate_k
+            )
+
+        if not dense_results:
+            logger.warning("No dense results available, falling back to brute-force")
             return find_matching_jobs_old(resume_text, top_k)
 
-        # --- Stage 1a: FAISS dense search ---
-        docs_with_scores = _run_in_thread(
-            job_index.similarity_search_with_score,
-            resume_text,
-            k=min(candidate_k, job_index.index.ntotal),
-        )
-
-        dense_ranked = [
-            doc.metadata["job_id"]
-            for doc, _ in docs_with_scores
-            if doc.metadata.get("job_id") is not None
-        ]
-        # Build FAISS score map for use as fallback similarity score in Stage 2
-        faiss_score_map = {
-            doc.metadata["job_id"]: max(0.0, min(1.0, 1 - (dist ** 2 / 2)))
-            for doc, dist in docs_with_scores
-            if doc.metadata.get("job_id") is not None
-        }
+        dense_ranked = [job_id for job_id, _ in dense_results]
+        # Similarity is already normalised 0..1 by the vector store.
+        dense_score_map = dict(dense_results)
 
         # --- Stage 1b: BM25 sparse search ---
         sparse_ranked: list[int] = []
@@ -196,7 +226,7 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             ).all()
         }
         active_candidates = [
-            (jobs_by_id[jid], faiss_score_map.get(jid, 0.5))
+            (jobs_by_id[jid], dense_score_map.get(jid, 0.5))
             for jid in top_fused_ids
             if jid in jobs_by_id
         ]
@@ -208,8 +238,6 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         # Preserve fused ranking order even though futures complete out of order.
         ordered_results = [None] * len(active_candidates)
 
-        from flask import current_app
-        app = current_app._get_current_object()
         with ThreadPoolExecutor(max_workers=_LLM_CONCURRENCY) as pool:
             future_to_idx = {
                 pool.submit(_analyze_job, app, resume_text, job, score): idx

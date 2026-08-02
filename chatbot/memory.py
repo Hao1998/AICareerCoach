@@ -281,8 +281,45 @@ def index_session_memories(app, user_id: int, messages: list, llm, session_date:
             logger.error("Failed to commit memory chunks: %s", e)
             return  # nothing to vec-index if commit failed
 
-        if _USE_VEC:
+        with app.app_context():
+            from services.pgvector_support import is_postgres
+            _is_pg = is_postgres()
+        if _is_pg:
+            _sync_chunks_to_pgvector(app)
+        elif _USE_VEC:
             _sync_chunks_to_vec(app)
+
+
+def _sync_chunks_to_pgvector(app) -> int:
+    """Copy JSON embeddings into user_memory_chunks.embedding_vec.
+
+    Memory chunks are append-only, so a missing vector is the only condition
+    that needs handling — the same semantics as _sync_chunks_to_vec.
+
+    Returns the number of rows updated; 0 on non-PostgreSQL engines.
+    """
+    from sqlalchemy import text
+
+    with app.app_context():
+        from services.pgvector_support import is_postgres
+        if not is_postgres():
+            return 0
+
+        engine = app.extensions['sqlalchemy'].engine
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "UPDATE user_memory_chunks "
+                    "SET embedding_vec = CAST(embedding::text AS vector) "
+                    "WHERE embedding IS NOT NULL AND embedding_vec IS NULL"
+                ))
+                conn.commit()
+                if result.rowcount:
+                    logger.info("Synced %d memory chunks to pgvector", result.rowcount)
+                return result.rowcount
+        except Exception as e:
+            logger.error("Failed to sync memory chunks to pgvector: %s", e)
+            return 0
 
 
 def _sync_chunks_to_vec(app):
@@ -316,8 +353,8 @@ def _sync_chunks_to_vec(app):
 def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
     """Retrieve the most semantically relevant past memories for a given query.
 
-    Uses sqlite-vec ANN when available; falls back to O(n) cosine on Postgres
-    or when sqlite-vec is not installed.
+    Uses pgvector on PostgreSQL, sqlite-vec ANN on SQLite when installed, and
+    falls back to an O(n) cosine scan otherwise.
     """
     try:
         query_vec = _get_embeddings_for_memory().embed_query(query)
@@ -325,6 +362,9 @@ def search_memories(user_id: int, query: str, top_k: int = 4) -> str:
         logger.error("Failed to embed memory search query: %s", e)
         return "Memory search temporarily unavailable."
 
+    from services.pgvector_support import is_postgres
+    if is_postgres():
+        return _search_memories_pgvector(user_id, query_vec, top_k)
     if _USE_VEC:
         return _search_memories_vec(user_id, query_vec, top_k)
     return _search_memories_cosine(user_id, query_vec, top_k)
@@ -377,6 +417,47 @@ def _search_memories_vec(user_id: int, query_vec, top_k: int) -> str:
     for chunk in chunks:
         date_str = chunk.session_date.strftime("%Y-%m-%d") if chunk.session_date else "unknown date"
         lines.append(f"[{date_str} | {chunk.memory_type}] {chunk.content}")
+    return "\n".join(lines)
+
+
+def _search_memories_pgvector(user_id: int, query_vec, top_k: int) -> str:
+    """Nearest-neighbour search via pgvector, filtered to one user in SQL.
+
+    The user predicate is inside the WHERE clause, so it applies before the
+    top-k cut. This is the fix for the sqlite-vec path's global candidate
+    fetch, where another user's closer chunks could crowd out this user's.
+    """
+    from sqlalchemy import text
+    from services.pgvector_support import to_vector_literal
+
+    try:
+        rows = db.session.execute(
+            text(
+                "SELECT content, memory_type, session_date "
+                "FROM user_memory_chunks "
+                "WHERE user_id = :uid AND embedding_vec IS NOT NULL "
+                "ORDER BY embedding_vec <=> CAST(:qvec AS vector) "
+                "LIMIT :k"
+            ),
+            {"uid": user_id, "qvec": to_vector_literal(query_vec), "k": top_k},
+        ).fetchall()
+    except Exception as e:
+        logger.error("pgvector memory query failed, falling back to cosine: %s", e)
+        db.session.rollback()
+        return _search_memories_cosine(user_id, query_vec, top_k)
+
+    if not rows:
+        # embedding_vec may simply not be synced yet for this user (no backfill
+        # runs automatically at boot) — that's not the same as "no memories
+        # exist". Fall through to the JSON-embedding cosine scan, which doesn't
+        # depend on embedding_vec being populated, so memories aren't invisible
+        # during the sync gap.
+        return _search_memories_cosine(user_id, query_vec, top_k)
+
+    lines = []
+    for content, memory_type, session_date in rows:
+        date_str = session_date.strftime("%Y-%m-%d") if session_date else "unknown date"
+        lines.append(f"[{date_str} | {memory_type}] {content}")
     return "\n".join(lines)
 
 
