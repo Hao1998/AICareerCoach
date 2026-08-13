@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/evals/chat_eval.py", line 35, in <module>
+    from ragas.metrics.collections import Faithfulness
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/__init__.py", line 4, in <module>
+    from ragas.dataset_schema import EvaluationDataset, MultiTurnSample, SingleTurnSample
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/dataset_schema.py", line 15, in <module>
+    from ragas.cost import CostCallbackHandler
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/cost.py", line 8, in <module>
+    from ragas.utils import get_from_dict
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/utils.py", line 18, in <module>
+    from datasets import Dataset
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/evals/datasets.py", line 14, in <module>
+    from ragas.llms import llm_factory
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/llms/__init__.py", line 1, in <module>
+    from ragas.llms.base import (
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/llms/base.py", line 21, in <module>
+    from ragas._analytics import LLMUsageEvent, track
+  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/_analytics.py", line 19, in <module>
+    from ragas.utils import get_debug_mode
+ImportError: cannot import name 'get_debug_mode' from partially initialized module 'ragas.utils' (most likely due to a circular import) (/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/utils.py)

@@ -75,3 +75,87 @@ def app_sqlite():
         yield application
         db.session.remove()
         db.drop_all()
+
+
+class FakePipeline:
+    """Minimal pipeline supporting the incr/ttl chain used by services/rate_limit.py."""
+
+    def __init__(self, client):
+        self._client = client
+        self._ops = []
+
+    def incr(self, key):
+        self._ops.append(('incr', key))
+        return self
+
+    def ttl(self, key):
+        self._ops.append(('ttl', key))
+        return self
+
+    def execute(self):
+        results = [getattr(self._client, op)(key) for op, key in self._ops]
+        self._ops = []
+        return results
+
+
+class FakeRedis:
+    """In-memory stand-in for redis.Redis(decode_responses=True).
+
+    Implements only the operations this codebase uses. TTLs are stored but
+    never expire on their own — call expire_now(key) to simulate expiry.
+    """
+
+    def __init__(self):
+        self.store = {}
+        self.ttls = {}
+
+    def incr(self, key):
+        self.store[key] = int(self.store.get(key, 0)) + 1
+        return self.store[key]
+
+    def ttl(self, key):
+        if key not in self.store:
+            return -2
+        return self.ttls.get(key, -1)
+
+    def expire(self, key, seconds):
+        if key not in self.store:
+            return False
+        self.ttls[key] = seconds
+        return True
+
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        if ex is not None:
+            self.ttls[key] = ex
+        return True
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def delete(self, *keys):
+        removed = 0
+        for key in keys:
+            if key in self.store:
+                del self.store[key]
+                self.ttls.pop(key, None)
+                removed += 1
+        return removed
+
+    def pipeline(self):
+        return FakePipeline(self)
+
+    def expire_now(self, key):
+        """Test helper — simulate TTL expiry."""
+        self.store.pop(key, None)
+        self.ttls.pop(key, None)
+
+
+@pytest.fixture
+def fake_redis(monkeypatch):
+    """Patch every get_redis() call site to return one shared FakeRedis."""
+    client = FakeRedis()
+    monkeypatch.setattr('services.redis_client.get_redis', lambda: client)
+    return client
