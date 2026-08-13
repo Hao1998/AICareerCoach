@@ -18,6 +18,9 @@
 - **Untrusted external data** (resume text, job descriptions, memory) must be wrapped in `<untrusted_data>` tags in any new prompt.
 - **No new Python dependencies.** Redis fakes in tests are hand-rolled — `fakeredis` is not in `requirements.txt` and must not be added.
 - **Never `from services.redis_client import get_redis`.** That binds the name at import time and defeats the `fake_redis` fixture's monkeypatch, so tests silently hit the developer's real Redis. Always `from services import redis_client` and call `redis_client.get_redis()` at use time. (A real Redis is running on localhost in this environment, so the failure is silent rather than loud.)
+- **Valid `TaskPlan.status` values are `'active'`, `'completed'`, `'abandoned'`, `'failed'` only.** `generate_plan` creates plans as `'active'`, and `get_active_plan()` filters on exactly `'active'` — a test that seeds any other value will not be found by it. There is no `'running'` status.
+- **Tests that call into `execute_plan` or `_load_context` need a real `User` row.** `_load_context` dereferences `user.full_name`; with no user it raises `AttributeError`, which `execute_plan`'s outer `except` swallows — so the test fails for a misleading reason. Create the user and use its real `id` rather than hardcoding `user_id=1`.
+- **Tests spanning two `app.app_context()` blocks need `db.session.expire_all()`** before re-reading rows. Flask-SQLAlchemy 3.1 gives each context re-entrance a distinct scoped session, so stale identity-map objects otherwise mask the write you are asserting on.
 - **Python interpreter: `.venv/bin/python`.** Bare `python` is NOT on PATH in this environment — every command in this plan that says `python` must be run as `.venv/bin/python`. Run from the repo root.
 - **Test command:** `.venv/bin/python -m pytest` (SQLite; pgvector tests skip without `TEST_DATABASE_URL`). Baseline at branch point: **53 passed, 19 skipped**.
 - **Eval command:** `.venv/bin/python evals/chat_eval.py` — required after Tasks 9–12 per CLAUDE.md. It calls `load_dotenv()` itself and `.env` already holds `XAI_API_KEY`, so no key needs to be supplied.
@@ -1072,7 +1075,7 @@ def test_gated_tool_names_lists_both_capabilities():
 def test_abandon_plan_marks_the_active_plan_abandoned(app_sqlite, fake_redis):
     app = app_sqlite
     with app.app_context():
-        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="running"))
+        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="active"))
         db.session.commit()
 
         result = gated_actions.abandon_plan(app, 1, "changed my mind")
@@ -1108,7 +1111,7 @@ def test_run_job_scout_enforces_the_hourly_budget(app_sqlite, fake_redis, monkey
 def test_execute_confirmed_dispatches_to_the_named_capability(app_sqlite, fake_redis):
     app = app_sqlite
     with app.app_context():
-        db.session.add(TaskPlan(user_id=1, goal="g", status="running"))
+        db.session.add(TaskPlan(user_id=1, goal="g", status="active"))
         db.session.commit()
 
         result = gated_actions.execute_confirmed(app, 1, {
@@ -1329,7 +1332,7 @@ def test_gated_tool_proposes_without_executing(app_sqlite, fake_redis):
     from models import TaskPlan, db
 
     with app.app_context():
-        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="running"))
+        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="active"))
         db.session.commit()
 
         tools = {t.name: t for t in build_tools(app, 1, surface="chat")}
@@ -1339,7 +1342,7 @@ def test_gated_tool_proposes_without_executing(app_sqlite, fake_redis):
         assert payload["action"] == "confirm_required"
         assert payload["nonce"]
         # The plan must be untouched — proposing is not doing.
-        assert TaskPlan.query.filter_by(user_id=1).first().status == "running"
+        assert TaskPlan.query.filter_by(user_id=1).first().status == "active"
 
 
 def test_gated_tool_does_not_consume_rate_budget_on_propose(app_sqlite, fake_redis):
@@ -1660,7 +1663,7 @@ def test_confirm_rejects_an_unknown_nonce(client_with_user):
 def test_confirm_executes_the_stored_capability(client_with_user):
     app, client, user_id = client_with_user
     with app.app_context():
-        db.session.add(TaskPlan(user_id=user_id, goal="g", status="running"))
+        db.session.add(TaskPlan(user_id=user_id, goal="g", status="active"))
         db.session.commit()
 
     nonce = propose(user_id, "abandon_career_plan", {"reason": "done"}, "Abandon 'g'?")
@@ -1675,7 +1678,7 @@ def test_confirm_executes_the_stored_capability(client_with_user):
 def test_confirm_ignores_client_supplied_capability_and_args(client_with_user):
     app, client, user_id = client_with_user
     with app.app_context():
-        db.session.add(TaskPlan(user_id=user_id, goal="g", status="running"))
+        db.session.add(TaskPlan(user_id=user_id, goal="g", status="active"))
         db.session.commit()
 
     nonce = propose(user_id, "abandon_career_plan", {"reason": "done"}, "Abandon 'g'?")
@@ -1694,7 +1697,7 @@ def test_confirm_ignores_client_supplied_capability_and_args(client_with_user):
 def test_confirm_is_single_use(client_with_user):
     app, client, user_id = client_with_user
     with app.app_context():
-        db.session.add(TaskPlan(user_id=user_id, goal="g", status="running"))
+        db.session.add(TaskPlan(user_id=user_id, goal="g", status="active"))
         db.session.commit()
 
     nonce = propose(user_id, "abandon_career_plan", {"reason": ""}, "Abandon 'g'?")
