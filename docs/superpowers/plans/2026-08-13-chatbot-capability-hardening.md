@@ -17,6 +17,7 @@
 - **`url_for` always takes the blueprint prefix**: `url_for('chat.confirm_action')`.
 - **Untrusted external data** (resume text, job descriptions, memory) must be wrapped in `<untrusted_data>` tags in any new prompt.
 - **No new Python dependencies.** Redis fakes in tests are hand-rolled — `fakeredis` is not in `requirements.txt` and must not be added.
+- **Never `from services.redis_client import get_redis`.** That binds the name at import time and defeats the `fake_redis` fixture's monkeypatch, so tests silently hit the developer's real Redis. Always `from services import redis_client` and call `redis_client.get_redis()` at use time. (A real Redis is running on localhost in this environment, so the failure is silent rather than loud.)
 - **Python interpreter: `.venv/bin/python`.** Bare `python` is NOT on PATH in this environment — every command in this plan that says `python` must be run as `.venv/bin/python`. Run from the repo root.
 - **Test command:** `.venv/bin/python -m pytest` (SQLite; pgvector tests skip without `TEST_DATABASE_URL`). Baseline at branch point: **53 passed, 19 skipped**.
 - **Eval command:** `.venv/bin/python evals/chat_eval.py` — required after Tasks 9–12 per CLAUDE.md. It calls `load_dotenv()` itself and `.env` already holds `XAI_API_KEY`, so no key needs to be supplied.
@@ -894,7 +895,12 @@ the nonce, so nothing downstream can alter what eventually runs.
 import json
 import secrets
 
-from services.redis_client import get_redis
+# Import the MODULE, not the function. `from services.redis_client import
+# get_redis` binds the name at import time, which defeats the test fixture's
+# monkeypatch of services.redis_client.get_redis — tests would then write to
+# the developer's real Redis instead of the in-memory double, and silently
+# pass or fail on real state. Resolve the attribute at call time instead.
+from services import redis_client
 
 TTL_SECONDS = 300
 
@@ -910,7 +916,7 @@ def propose(user_id: int, capability: str, args: dict, label: str) -> str:
         "args": args,
         "label": label,
     })
-    get_redis().set(f"{_PREFIX}{nonce}", payload, ex=TTL_SECONDS)
+    redis_client.get_redis().set(f"{_PREFIX}{nonce}", payload, ex=TTL_SECONDS)
     return nonce
 
 
@@ -921,7 +927,7 @@ def claim(user_id: int, nonce: str) -> dict | None:
     it on a failed ownership check would let any authenticated user burn every
     pending action issued to anyone else.
     """
-    redis = get_redis()
+    redis = redis_client.get_redis()
     key = f"{_PREFIX}{nonce}"
 
     raw = redis.get(key)
