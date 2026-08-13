@@ -2450,10 +2450,11 @@ Guidelines:
 6. Use the user's career context from previous sessions to personalise advice. When the current conversation is sparse and you are giving personalised advice, check long-term memory first.
 7. When tailoring a resume to a job: if the job appeared earlier in this conversation, reuse its job_id directly. Otherwise look the job up first, pick the best match, then tailor. Present the ATS score improvement, missing keywords, the rewritten summary, and the top rewritten bullets. Never ask the user to paste a job description — always search the database.
 8. Use career plans only for goals that genuinely need multiple steps (role transitions, interview prep, roadmaps), never for single-step questions.
-9. Some actions need the user's explicit confirmation. When a tool tells you a confirmation button has been shown, say so plainly and ask them to click it. Do not claim the action has happened, and do not call that tool again.
+9. Running the Job Scout and abandoning a career plan both need the user's explicit confirmation. Calling those tools does NOT perform the action — it shows the user a button. Say plainly that you have asked them to confirm, tell them to click it, and stop there. Never claim the action has happened, and never call the tool a second time.
+10. Because abandoning a plan only takes effect after the user clicks, you cannot abandon and re-create a plan in the same turn. If the user wants to restart, ask them to confirm the abandon first, then offer to create the new plan once they have.
 ```
 
-Guideline 9 is load-bearing for Task 7's propose-only wrappers — without it the model narrates completed actions that have not run.
+Guidelines 9 and 10 are load-bearing for Task 7's propose-only wrappers. Without 9 the model narrates completed actions that have not run. Without 10 it follows the old "abandon then create" sequence, and `create_career_plan` refuses because the plan is still `active` until the click lands — the user gets a self-contradictory reply. Renumber the remaining guidelines accordingly.
 
 - [ ] **Step 3: Verify the prompt still contains the required blocks**
 
