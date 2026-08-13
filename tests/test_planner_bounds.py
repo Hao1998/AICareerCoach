@@ -25,6 +25,17 @@ test_create_career_plan_enforces_the_daily_budget
     5 plans per day per user. Unlike the gated capabilities, this budget is
     consumed in the tool itself — create_career_plan needs no confirmation,
     so there is no later step at which to charge it.
+test_unhandled_exception_gets_a_terminal_status
+    An unhandled exception anywhere in execute_plan (LLM timeout, DB error,
+    network failure — considerably more likely in production than exhausting
+    15 iterations) hits the outer except block. That block used to only log
+    and return {} without touching plan.status, leaving the identical
+    permanent-lockout bug open on the exception path. It must now mark the
+    plan 'failed'.
+test_unhandled_exception_does_not_overwrite_a_completed_plan
+    Guards the `status == 'active'` check in the exception handler: if the
+    loop already reached a legitimate terminal status ('completed') before a
+    later line threw, the handler must not clobber it with 'failed'.
 """
 
 import json
@@ -129,3 +140,83 @@ def test_create_career_plan_enforces_the_daily_budget(app_sqlite, fake_redis, mo
         assert created["n"] == 5, "5 plans should be created before the budget refuses"
         assert outcomes[5]["success"] is False
         assert "limit" in outcomes[5]["error"].lower()
+
+
+def test_unhandled_exception_gets_a_terminal_status(app_sqlite, monkeypatch):
+    """An unhandled exception in execute_plan must not leave status='active'.
+
+    This is the same permanent-lockout bug as the exhaustion path, but
+    reached via the outer except block instead of the for/else. An LLM
+    timeout, DB error, or network failure is far more likely in production
+    than burning all 15 iterations, so this path matters more in practice.
+    """
+    app = app_sqlite
+    monkeypatch.setattr("services.llm_service.get_llm", lambda: None)
+
+    # Force an unhandled exception early in execute_plan (build_tools is
+    # called right after get_llm(), before the loop or _load_context run).
+    def _boom(*a, **k):
+        raise RuntimeError("simulated LLM/tool-building failure")
+
+    monkeypatch.setattr("chatbot.tools.build_tools", _boom)
+
+    with app.app_context():
+        user = User(email="exc-user@example.com", username="exc-user", password_hash="x")
+        db.session.add(user)
+        db.session.commit()
+
+        plan = TaskPlan(user_id=user.id, goal="explode", status="active")
+        db.session.add(plan)
+        db.session.commit()
+        plan_id = plan.id
+
+        result = planner_module.execute_plan(app, user.id, plan_id)
+
+        assert result == {}
+
+        # execute_plan's exception handler re-enters its own app_context
+        # (production has none active at that point — the outer `with
+        # app.app_context():` already unwound before the except runs). That
+        # gives it a distinct scoped session from this test's outer context,
+        # so this session's identity map still holds the pre-failure 'active'
+        # object. Expire it to force a fresh read of what was actually
+        # committed.
+        db.session.expire_all()
+        refreshed = db.session.get(TaskPlan, plan_id)
+        assert refreshed.status == "failed", (
+            "unhandled exception left plan active — user is now locked out of new plans"
+        )
+
+        from chatbot.planner import get_active_plan
+        assert get_active_plan(user.id) is None
+
+
+def test_unhandled_exception_does_not_overwrite_a_completed_plan(app_sqlite, monkeypatch):
+    """The exception handler's status=='active' guard must not clobber a
+    legitimate terminal status reached before the exception fired."""
+    app = app_sqlite
+    monkeypatch.setattr("services.llm_service.get_llm", lambda: None)
+
+    def _boom(*a, **k):
+        raise RuntimeError("simulated failure after the plan already completed")
+
+    monkeypatch.setattr("chatbot.tools.build_tools", _boom)
+
+    with app.app_context():
+        user = User(email="completed-user@example.com", username="completed-user", password_hash="x")
+        db.session.add(user)
+        db.session.commit()
+
+        # Plan is already in a legitimate terminal state when the exception fires.
+        plan = TaskPlan(user_id=user.id, goal="already done", status="completed")
+        db.session.add(plan)
+        db.session.commit()
+        plan_id = plan.id
+
+        planner_module.execute_plan(app, user.id, plan_id)
+
+        db.session.expire_all()  # see comment in the sibling test above
+        refreshed = db.session.get(TaskPlan, plan_id)
+        assert refreshed.status == "completed", (
+            "exception handler overwrote a legitimate terminal status"
+        )

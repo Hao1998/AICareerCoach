@@ -618,6 +618,19 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
     except Exception as exc:
         logger.error("[execute_plan] ✗ UNHANDLED ERROR for plan %d:\n%s",
                      plan_id, traceback.format_exc())
+        # Leaving status='active' here would permanently lock the user out of
+        # creating new plans (get_active_plan filters on 'active', and
+        # create_career_plan refuses while one exists). Best-effort terminal
+        # status; never let bookkeeping mask the original error.
+        try:
+            with app.app_context():
+                db.session.rollback()
+                failed_plan = db.session.get(TaskPlan, plan_id)
+                if failed_plan is not None and failed_plan.status == 'active':
+                    failed_plan.status = 'failed'
+                    safe_commit()
+        except Exception:
+            logger.exception("[execute_plan] Could not mark plan %d failed", plan_id)
         return {}
 
 
