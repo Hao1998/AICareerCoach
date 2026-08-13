@@ -24,6 +24,11 @@ from services.db_lock import safe_commit, safe_flush
 # Marker used to identify the final synthesis step
 SYNTHESIS_MARKER = "SYNTHESIZE:"
 
+# Hard ceiling on the plan -> execute -> replan loop. execute_plan runs in an
+# unsupervised daemon thread, so this is the only thing bounding its LLM
+# spend. Kept at the value the loop has always used.
+MAX_PLAN_ITERATIONS = 15
+
 logger = logging.getLogger(__name__)
 
 # ── Available tools the planner can reference ─────────────────────────────────
@@ -389,9 +394,8 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
             user_context_str = "\n".join(user_context_parts)
 
             step_results = []
-            max_iterations = 15
 
-            for iteration in range(max_iterations):
+            for iteration in range(MAX_PLAN_ITERATIONS):
                 # ── pick next pending step ───────────────────────────────────
                 next_step = (PlanStep.query
                              .filter_by(plan_id=plan_id, status='pending')
@@ -579,6 +583,21 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
 
                 except Exception as replan_exc:
                     logger.error("[execute_plan] Replan failed (continuing anyway): %s", replan_exc)
+
+            else:
+                # Every terminal path inside the loop breaks. Reaching here means
+                # the iteration budget was exhausted with steps still pending.
+                # Without this, plan.status stays 'active' forever — and because
+                # get_active_plan() filters on 'active' and create_career_plan
+                # refuses while one exists, the user would be permanently locked
+                # out of creating new plans.
+                logger.warning(
+                    "[execute_plan] Plan %d exhausted MAX_PLAN_ITERATIONS (%d) "
+                    "with steps still pending — marking failed",
+                    plan_id, MAX_PLAN_ITERATIONS,
+                )
+                plan.status = 'failed'
+                safe_commit()
 
             # ── final summary ────────────────────────────────────────────────
             db.session.refresh(plan)

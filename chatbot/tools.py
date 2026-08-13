@@ -16,6 +16,7 @@ from sqlalchemy.orm import joinedload
 from models import AgentConfig, JobMatch, Resume, db
 from services.db_lock import safe_commit
 from services.job_service import find_matching_jobs
+from services.rate_limit import allow, PLAN_BUDGETS
 from services.resume_service import get_resume_text, perform_qa
 
 logger = logging.getLogger(__name__)
@@ -465,6 +466,13 @@ def build_tools(app, user_id, progress_cb=None):
                     "success": False,
                     "error": "You already have an active plan. Complete or abandon it first.",
                     "current_plan": format_plan_status(existing),
+                })
+
+            if not allow("plan_create", user_id, PLAN_BUDGETS):
+                return json.dumps({
+                    "success": False,
+                    "error": "You've reached the limit of 5 new career plans per day. "
+                             "Your existing plan's roadmap is still available.",
                 })
 
             try:
