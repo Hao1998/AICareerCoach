@@ -17,8 +17,9 @@
 - **`url_for` always takes the blueprint prefix**: `url_for('chat.confirm_action')`.
 - **Untrusted external data** (resume text, job descriptions, memory) must be wrapped in `<untrusted_data>` tags in any new prompt.
 - **No new Python dependencies.** Redis fakes in tests are hand-rolled — `fakeredis` is not in `requirements.txt` and must not be added.
-- **Test command:** `python -m pytest` (SQLite; pgvector tests skip without `TEST_DATABASE_URL`).
-- **Eval command:** `python evals/chat_eval.py` — required after Tasks 9–12 per CLAUDE.md.
+- **Python interpreter: `.venv/bin/python`.** Bare `python` is NOT on PATH in this environment — every command in this plan that says `python` must be run as `.venv/bin/python`. Run from the repo root.
+- **Test command:** `.venv/bin/python -m pytest` (SQLite; pgvector tests skip without `TEST_DATABASE_URL`). Baseline at branch point: **53 passed, 19 skipped**.
+- **Eval command:** `.venv/bin/python evals/chat_eval.py` — required after Tasks 9–12 per CLAUDE.md. It calls `load_dotenv()` itself and `.env` already holds `XAI_API_KEY`, so no key needs to be supplied.
 - **Rate-limit budgets, exact values:** `trigger_job_scout_agent` = 3/hour/user; `create_career_plan` = 5/day/user; WebSocket chat = 20/min and 200/day per user.
 - **Nonce TTL, exact value:** 300 seconds.
 
@@ -650,26 +651,43 @@ def test_execute_plan_stops_at_the_iteration_cap(app_sqlite, monkeypatch):
 
 def test_create_career_plan_enforces_the_daily_budget(app_sqlite, fake_redis, monkeypatch):
     app = app_sqlite
-    # generate_plan is one LLM call — stub it so this test stays offline and
-    # measures only the budget.
-    monkeypatch.setattr(planner_module, "get_llm", lambda: None, raising=False)
+
+    created = {"n": 0}
+
+    def _fake_generate_plan(app_arg, uid, goal, llm):
+        created["n"] += 1
+        plan = TaskPlan(user_id=uid, goal=goal, status="running")
+        db.session.add(plan)
+        db.session.commit()
+        return plan
+
+    # create_career_plan does `from chatbot.planner import generate_plan,
+    # execute_plan` INSIDE the function body, so patching the planner module's
+    # attributes works — the lookup happens at call time.
+    monkeypatch.setattr(planner_module, "generate_plan", _fake_generate_plan)
+    monkeypatch.setattr(planner_module, "execute_plan", lambda *a, **k: None)
+    # The tool imports get_llm from services.llm_service, not from planner.
+    monkeypatch.setattr("services.llm_service.get_llm", lambda: None)
 
     with app.app_context():
         tools = {t.name: t for t in build_tools(app, 1)}
         create = tools["create_career_plan"]
 
-        refusals = 0
+        outcomes = []
         for _ in range(6):
-            payload = json.loads(create.invoke("become an ML engineer"))
-            if not payload.get("success") and "limit" in (payload.get("error") or "").lower():
-                refusals += 1
+            outcomes.append(json.loads(create.invoke("become an ML engineer")))
+            # Clear the active plan between calls. Without this, calls 2-6
+            # short-circuit on "you already have an active plan" and never
+            # reach the budget check at all.
+            TaskPlan.query.filter_by(user_id=1).update({"status": "abandoned"})
+            db.session.commit()
 
-        # The 6th call must be refused on budget. Earlier calls may fail for
-        # other reasons (an active plan already exists), which is why this
-        # asserts on the budget refusal specifically rather than on a count
-        # of successes.
-        assert refusals >= 1
+        assert created["n"] == 5, "5 plans should be created before the budget refuses"
+        assert outcomes[5]["success"] is False
+        assert "limit" in outcomes[5]["error"].lower()
 ```
+
+**Placement matters:** the budget check goes *after* the active-plan early return (Step 5), so a call refused for "you already have a plan" does not consume budget — only real creations are charged. The test abandons the plan between iterations precisely because of that ordering.
 
 **Note:** this test calls `build_tools(app, 1)` with the current signature. Task 7 makes `surface` a required keyword — its Step 5 call-site sweep updates this line to `build_tools(app, 1, surface="chat")`.
 
