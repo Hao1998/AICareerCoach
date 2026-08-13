@@ -13,17 +13,25 @@ import numpy as np
 from langchain_core.tools import tool
 from sqlalchemy.orm import joinedload
 
+from chatbot.gated_actions import GATED_TOOL_NAMES
 from models import AgentConfig, JobMatch, Resume, db
 from services.db_lock import safe_commit
 from services.job_service import find_matching_jobs
-from services.rate_limit import allow, PLAN_BUDGETS
+from services.pending_actions import propose
+from services.rate_limit import allow, would_allow, PLAN_BUDGETS, SCOUT_BUDGETS
 from services.resume_service import get_resume_text, perform_qa
 
 logger = logging.getLogger(__name__)
 
 
-def build_tools(app, user_id, progress_cb=None):
+def build_tools(app, user_id, *, surface: str, progress_cb=None):
     """Return the list of LangChain tools bound to app + user_id.
+
+    surface: 'chat' or 'planner'. Keyword-only with no default on purpose —
+        the planner runs in a background thread with no user present, so it
+        must never receive a capability that requires confirmation. A caller
+        who forgets this argument gets a TypeError instead of silently
+        receiving the permissive set.
 
     progress_cb: optional callable(label: str) pushed mid-tool to update the UI.
     """
@@ -221,21 +229,29 @@ def build_tools(app, user_id, progress_cb=None):
 
     @tool
     def trigger_job_scout_agent(reason: str) -> str:
-        """Trigger the Job Scout Agent to automatically search for new jobs and find matches. Use this when the user asks to run the agent, scan for new jobs, or do an automatic job search."""
-        with app.app_context():
-            from flask import current_app
-            try:
-                _progress("Fetching jobs from all enabled sources…")
-                result = current_app.extensions['scheduler'].trigger_manual_run(user_id)
-                return json.dumps({
-                    "success": result['status'] == 'success',
-                    "matches_found": result.get('matches_found', 0),
-                    "jobs_analyzed": result.get('jobs_analyzed', 0),
-                    "jobs_fetched": result.get('jobs_fetched', 0),
-                })
-            except Exception as e:
-                logger.error("trigger_job_scout_agent error: %s", e)
-                return json.dumps({"success": False, "error": str(e)})
+        """Ask the user to confirm running the Job Scout Agent, which searches all enabled job sources for new matches. Use this when the user asks to run the agent, scan for new jobs, or do an automatic job search. This does NOT run the scout — it shows the user a confirmation button."""
+        if surface != "chat":
+            raise RuntimeError(
+                f"trigger_job_scout_agent requires a confirmable surface; got {surface!r}"
+            )
+
+        if not would_allow("scout_manual", user_id, SCOUT_BUDGETS):
+            return json.dumps({
+                "success": False,
+                "error": "You've reached the limit of 3 manual scout runs per hour. "
+                         "The scheduled runs will keep finding matches in the meantime.",
+            })
+
+        label = "Run the Job Scout now?"
+        nonce = propose(user_id, "trigger_job_scout_agent", {"reason": reason}, label)
+        return json.dumps({
+            "success": True,
+            "action": "confirm_required",
+            "nonce": nonce,
+            "label": label,
+            "note": "Confirmation required. The user has been shown a button. "
+                    "Tell them to click it. Do not call this tool again.",
+        })
 
     @tool
     def get_recent_matches(limit: int = 5) -> str:
@@ -573,7 +589,12 @@ def build_tools(app, user_id, progress_cb=None):
 
     @tool
     def abandon_career_plan(reason: str = "") -> str:
-        """Abandon the user's current active career plan. Use this when the user wants to cancel, restart, or change their career plan."""
+        """Ask the user to confirm abandoning their current active career plan. Use this when the user wants to cancel, restart, or change their career plan. This does NOT abandon the plan — it shows the user a confirmation button."""
+        if surface != "chat":
+            raise RuntimeError(
+                f"abandon_career_plan requires a confirmable surface; got {surface!r}"
+            )
+
         with app.app_context():
             from chatbot.planner import get_active_plan
 
@@ -581,13 +602,23 @@ def build_tools(app, user_id, progress_cb=None):
             if not plan:
                 return json.dumps({"success": False, "error": "No active plan to abandon."})
 
-            plan.status = 'abandoned'
-            safe_commit()
+            # Resolve the arguments server-side and freeze them into the pending
+            # action. The client only ever echoes the nonce back.
+            label = f"Abandon your plan '{plan.goal}'?"
+            nonce = propose(user_id, "abandon_career_plan", {"reason": reason}, label)
             return json.dumps({
                 "success": True,
-                "message": f"Plan '{plan.goal}' has been abandoned. You can create a new one anytime.",
+                "action": "confirm_required",
+                "nonce": nonce,
+                "label": label,
+                "note": "Confirmation required. The user has been shown a button. "
+                        "Tell them to click it. Do not call this tool again.",
             })
 
-    return [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches,
-            explain_feature, search_job_by_title, tailor_resume_to_job, get_user_preferences,
-            search_memory, create_career_plan, get_career_plan_status, abandon_career_plan]
+    all_tools = [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches,
+                 explain_feature, search_job_by_title, tailor_resume_to_job, get_user_preferences,
+                 search_memory, create_career_plan, get_career_plan_status, abandon_career_plan]
+
+    if surface == "chat":
+        return all_tools
+    return [t for t in all_tools if t.name not in GATED_TOOL_NAMES]

@@ -137,7 +137,7 @@ def handle_chat_message(data):
                 if chat_history:
                     chat_history = chat_history[:-1]
 
-                tools = build_tools(app, user_id, progress_cb=handler.push_progress)
+                tools = build_tools(app, user_id, surface="chat", progress_cb=handler.push_progress)
                 agent = _build_agent(llm, tools, system_prompt)
 
                 response_text, messages = _invoke_agent(

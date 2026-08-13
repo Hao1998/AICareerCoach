@@ -125,7 +125,7 @@ def test_create_career_plan_enforces_the_daily_budget(app_sqlite, fake_redis, mo
     monkeypatch.setattr("services.llm_service.get_llm", lambda: None)
 
     with app.app_context():
-        tools = {t.name: t for t in build_tools(app, 1)}
+        tools = {t.name: t for t in build_tools(app, 1, surface="chat")}
         create = tools["create_career_plan"]
 
         outcomes = []

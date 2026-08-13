@@ -263,7 +263,7 @@ class CareerCoachChatbot:
 
             user, resume, config, liked_count, disliked_count = _load_context(self.app, user_id)
             llm = get_llm()
-            tools = build_tools(self.app, user_id)
+            tools = build_tools(self.app, user_id, surface="chat")
             system_prompt = build_system_prompt(user, resume, config, liked_count, disliked_count)
             chat_history = get_conversation_history(user_id, limit=10)
             if chat_history:
@@ -329,7 +329,7 @@ class CareerCoachChatbot:
                     chat_history = chat_history[:-1]
 
                 handler = TokenStreamHandler(event_queue)
-                tools = build_tools(self.app, user_id, progress_cb=handler.push_progress)
+                tools = build_tools(self.app, user_id, surface="chat", progress_cb=handler.push_progress)
                 agent = _build_agent(llm, tools, system_prompt)
 
                 response_text, messages = _invoke_agent(

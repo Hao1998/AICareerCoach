@@ -379,7 +379,7 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
             llm = get_llm()
             logger.info("[execute_plan] LLM ready")
 
-            tools = build_tools(app, user_id)
+            tools = build_tools(app, user_id, surface="planner")
             tools_by_name = {t.name: t for t in tools}
             logger.info("[execute_plan] Tools built: %s", list(tools_by_name.keys()))
 
