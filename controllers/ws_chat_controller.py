@@ -18,11 +18,21 @@ from factory import socketio
 from models import db, ChatMessage
 from services.db_lock import safe_commit
 from services.input_guard import scan_message
+from services.rate_limit import allow, CHAT_BUDGETS
 from services.streaming import acquire_stream_slot, release_stream_slot, WebSocketStreamHandler
 
 logger = logging.getLogger(__name__)
 
 _cancel_events: dict[int, threading.Event] = {}
+
+
+def chat_rate_guard(user_id: int) -> bool:
+    """Consume one chat message against the user's budget.
+
+    Mirrors the /api/chat route's flask-limiter config, which socket.io
+    events bypass entirely.
+    """
+    return allow("chat_ws", user_id, CHAT_BUDGETS)
 
 
 @socketio.on('connect')
@@ -63,6 +73,17 @@ def handle_chat_message(data):
         return
 
     user_id = current_user.id
+
+    try:
+        within_budget = chat_rate_guard(user_id)
+    except Exception:
+        logger.exception("Redis unavailable while rate limiting user %s", user_id)
+        emit('error', {'error': 'Chat is temporarily unavailable. Please try again shortly.'})
+        return
+
+    if not within_budget:
+        emit('error', {'error': 'Too many messages. Please slow down.'})
+        return
 
     try:
         slot_acquired = acquire_stream_slot(user_id)
