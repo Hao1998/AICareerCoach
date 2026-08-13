@@ -561,15 +561,32 @@ git commit -m "fix: rate limit the WebSocket chat path to match /api/chat"
 
 **Interfaces:**
 - Consumes: `allow`, `PLAN_BUDGETS` from Task 2
-- Produces: `MAX_PLAN_ITERATIONS: int = 12` module constant in `chatbot/planner.py`
+- Produces: `MAX_PLAN_ITERATIONS: int = 15` module constant in `chatbot/planner.py`
 
-**Context:** `create_career_plan` (`chatbot/tools.py:454`) spawns a daemon thread running `execute_plan`'s plan→execute→replan loop. Two things are unbounded: how often a user may create plans, and how many times the loop may iterate. `create_career_plan` is not a gated capability (spec §3.1 — costly but constructive), so its budget is enforced in the tool itself rather than at a confirmation step.
+**Context — CORRECTED after reading the code.** The design spec's §2.2 C3 claimed the loop was unbounded. **It is not.** `execute_plan` already caps it at `max_iterations = 15` (`chatbot/planner.py:392`, `for iteration in range(max_iterations)`). Do not add a second cap.
 
-- [ ] **Step 1: Read the loop before changing it**
+The actual defect is what happens when that cap is *reached*:
 
-Run: `sed -n '390,470p' chatbot/planner.py`
+- Every terminal path inside the loop sets `plan.status = 'completed'` **and `break`s**.
+- If all 15 iterations are consumed without breaking — the replanner keeps appending pending steps after failures — the loop falls through to the "final summary" block (`planner.py:583`), which only logs and returns. **`plan.status` is never set to anything terminal.**
+- `generate_plan` creates plans with `status='active'` (`planner.py:112`), and `get_active_plan` (`planner.py:621`) filters on exactly `status='active'`.
+- `create_career_plan` refuses whenever `get_active_plan` returns a plan.
 
-Identify the `while` loop and how it terminates today. The cap goes on that loop's iteration count. Confirm whether an iteration counter already exists before adding one.
+**Consequence: a plan that exhausts its iteration budget leaves `status='active'` forever, permanently locking the user out of creating any new plan.** The only escape is `abandon_career_plan`, which after Task 7 requires the user to notice and ask.
+
+This task therefore (a) promotes the magic number to a reviewable module constant at its current value, (b) sets a terminal status on exhaustion, and (c) adds the plan-creation rate budget.
+
+- [ ] **Step 1: Confirm the current state before changing it**
+
+```bash
+sed -n '390,400p' chatbot/planner.py
+sed -n '580,595p' chatbot/planner.py
+grep -n "status='active'\|status = 'completed'" chatbot/planner.py
+```
+
+You should see `max_iterations = 15`, the `for iteration in range(max_iterations)` loop, and a final-summary block after the loop that logs and returns without touching `plan.status`. If what you see differs from the Context above, STOP and report — the plan was written against a specific revision.
+
+**Keep the value at 15.** Renaming a magic number to a constant is this task's scope; changing runtime behaviour by lowering the cap is not.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -592,10 +609,13 @@ watching that thread.
 What each test covers
 ---------------------
 test_max_plan_iterations_is_defined
-    The cap exists as a module constant, so it is one reviewable line.
-test_execute_plan_stops_at_the_iteration_cap
-    A plan whose replanner always yields another step terminates at the cap
-    rather than looping, and records a terminal status.
+    The cap exists as a module constant at its current value, so it is one
+    reviewable line rather than a magic number buried in the loop.
+test_exhausted_plan_gets_a_terminal_status
+    THE LOAD-BEARING TEST. A plan that consumes every iteration without
+    completing must not be left at status='active'. If it is, get_active_plan
+    keeps returning it and create_career_plan refuses forever — the user is
+    permanently locked out of creating plans.
 test_create_career_plan_enforces_the_daily_budget
     5 plans per day per user. Unlike the gated capabilities, this budget is
     consumed in the tool itself — create_career_plan needs no confirmation,
@@ -610,44 +630,51 @@ from models import TaskPlan, PlanStep, db
 
 
 def test_max_plan_iterations_is_defined():
-    assert isinstance(planner_module.MAX_PLAN_ITERATIONS, int)
-    assert planner_module.MAX_PLAN_ITERATIONS > 0
+    assert planner_module.MAX_PLAN_ITERATIONS == 15
 
 
-def test_execute_plan_stops_at_the_iteration_cap(app_sqlite, monkeypatch):
+def test_exhausted_plan_gets_a_terminal_status(app_sqlite, monkeypatch):
+    """A plan that burns every iteration must not stay status='active'.
+
+    get_active_plan filters on status='active' and create_career_plan refuses
+    whenever it returns a plan, so an 'active' plan that can never progress
+    locks the user out of creating any new plan, permanently.
+    """
     app = app_sqlite
     monkeypatch.setattr(planner_module, "MAX_PLAN_ITERATIONS", 3)
+    monkeypatch.setattr(planner_module, "get_llm", lambda: None)
 
     with app.app_context():
-        plan = TaskPlan(user_id=1, goal="loop forever", status="running")
+        plan = TaskPlan(user_id=1, goal="loop forever", status="active")
         db.session.add(plan)
         db.session.commit()
         plan_id = plan.id
 
-        # A replanner that never runs out of work.
-        call_count = {"n": 0}
-
-        def _always_another_step(*args, **kwargs):
-            call_count["n"] += 1
-            step = PlanStep(
+        # Seed more pending steps than the cap allows. Each names a tool that
+        # is NOT in tools_by_name, so it hits the loop's
+        # "Unknown tool ... Skipping." branch — that consumes an iteration and
+        # makes no LLM call, keeping this test offline.
+        for i in range(1, 11):
+            db.session.add(PlanStep(
                 plan_id=plan_id,
-                step_order=call_count["n"],
-                description=f"step {call_count['n']}",
-                tool_name=None,
+                step_order=i,
+                description=f"step {i}",
+                tool_name="no_such_tool",
                 status="pending",
-            )
-            db.session.add(step)
-            db.session.commit()
-            return step
-
-        monkeypatch.setattr(planner_module, "get_llm", lambda: None)
-        monkeypatch.setattr(planner_module, "_next_step", _always_another_step, raising=False)
+            ))
+        db.session.commit()
 
         planner_module.execute_plan(app, 1, plan_id)
 
-        refreshed = TaskPlan.query.get(plan_id)
-        assert refreshed.status in ("done", "failed", "abandoned")
-        assert call_count["n"] <= 3
+        refreshed = db.session.get(TaskPlan, plan_id)
+        assert refreshed.status != "active", (
+            "exhausted plan left active — user is now locked out of new plans"
+        )
+        assert refreshed.status == "failed"
+
+        # And the user can create plans again.
+        from chatbot.planner import get_active_plan
+        assert get_active_plan(1) is None
 
 
 def test_create_career_plan_enforces_the_daily_budget(app_sqlite, fake_redis, monkeypatch):
@@ -688,47 +715,66 @@ def test_create_career_plan_enforces_the_daily_budget(app_sqlite, fake_redis, mo
         assert "limit" in outcomes[5]["error"].lower()
 ```
 
-**Placement matters:** the budget check goes *after* the active-plan early return (Step 5), so a call refused for "you already have a plan" does not consume budget — only real creations are charged. The test abandons the plan between iterations precisely because of that ordering.
+**Placement matters:** the budget check goes *after* the active-plan early return (Step 6), so a call refused for "you already have a plan" does not consume budget — only real creations are charged. The test abandons the plan between iterations precisely because of that ordering.
 
 **Note:** this test calls `build_tools(app, 1)` with the current signature. Task 7 makes `surface` a required keyword — its Step 5 call-site sweep updates this line to `build_tools(app, 1, surface="chat")`.
 
-**Note for the implementer:** the monkeypatch target `_next_step` is a placeholder for whatever the loop actually calls to obtain the next step — Step 1 tells you its real name. Adjust the patch target to match, keeping the assertion identical.
+**Why `no_such_tool` rather than a stub:** steps with `tool_name=None` fall to the loop's reasoning or synthesis branches, both of which invoke an LLM chain. Naming a tool that is absent from `tools_by_name` reaches the `"Unknown tool … Skipping."` branch instead — it consumes an iteration, marks the step done, and makes no network call.
 
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_planner_bounds.py -v`
 Expected: FAIL — `AttributeError: module 'chatbot.planner' has no attribute 'MAX_PLAN_ITERATIONS'`
 
-- [ ] **Step 4: Implement the cap**
+- [ ] **Step 4: Promote the constant and make exhaustion terminal**
 
 In `chatbot/planner.py`, near `SYNTHESIS_MARKER`:
 
 ```python
 # Hard ceiling on the plan -> execute -> replan loop. execute_plan runs in an
-# unsupervised daemon thread; without this, a replanner that keeps producing
-# steps burns LLM budget until the process dies.
-MAX_PLAN_ITERATIONS = 12
+# unsupervised daemon thread, so this is the only thing bounding its LLM
+# spend. Kept at the value the loop has always used.
+MAX_PLAN_ITERATIONS = 15
 ```
 
-In `execute_plan`, add an iteration counter to the loop and terminate on the cap:
+Delete the local `max_iterations = 15` (`planner.py:392`) and change the loop header to use the constant:
 
 ```python
-        iterations = 0
-        while True:
-            iterations += 1
-            if iterations > MAX_PLAN_ITERATIONS:
+            for iteration in range(MAX_PLAN_ITERATIONS):
+```
+
+Then, immediately after the `for` loop and before the `# ── final summary ──` block, add the exhaustion handler. **The `for`/`else` form is what makes this correct** — `else` runs only when the loop completes without `break`, which is exactly the exhaustion case, and every terminal path inside the loop already breaks:
+
+```python
+            else:
+                # Every terminal path inside the loop breaks. Reaching here means
+                # the iteration budget was exhausted with steps still pending.
+                # Without this, plan.status stays 'active' forever — and because
+                # get_active_plan() filters on 'active' and create_career_plan
+                # refuses while one exists, the user would be permanently locked
+                # out of creating new plans.
                 logger.warning(
-                    "[execute_plan] Plan %d hit MAX_PLAN_ITERATIONS (%d) — terminating",
+                    "[execute_plan] Plan %d exhausted MAX_PLAN_ITERATIONS (%d) "
+                    "with steps still pending — marking failed",
                     plan_id, MAX_PLAN_ITERATIONS,
                 )
                 plan.status = 'failed'
                 safe_commit()
-                break
 ```
 
-Place this at the top of the existing loop body, before any LLM call.
+Indent it to match the `for` statement, not the loop body.
 
-- [ ] **Step 5: Enforce the plan-creation budget**
+- [ ] **Step 5: Document the new status value**
+
+`models.py:292` comments the valid statuses as `# 'active', 'completed', 'abandoned'`. Update it:
+
+```python
+    status = db.Column(db.String(20), default='active')  # 'active', 'completed', 'abandoned', 'failed'
+```
+
+This is a comment only — `status` is a plain `String(20)` with no constraint or enum, so **no migration is required.** Do not create one.
+
+- [ ] **Step 6: Enforce the plan-creation budget**
 
 In `chatbot/tools.py`, add to the imports:
 
@@ -752,12 +798,12 @@ The budget is consumed here rather than at a confirmation step because
 `create_career_plan` is not a gated capability (spec §3.1) — there is no later
 moment at which to charge it.
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 7: Run tests to verify they pass**
 
-Run: `python -m pytest tests/test_planner_bounds.py -v`
+Run: `.venv/bin/python -m pytest tests/test_planner_bounds.py -v`
 Expected: 3 passed.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add chatbot/planner.py chatbot/tools.py tests/test_planner_bounds.py
