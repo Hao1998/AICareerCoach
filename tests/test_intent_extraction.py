@@ -124,3 +124,30 @@ def test_extract_intent_end_to_end_from_messages():
     intent, action_data = _extract_intent(_tool_steps_from_messages(messages))
     assert intent == "open_tailor_modal"
     assert json.loads(action_data)["job_id"] == 9
+
+
+def test_extract_intent_confirm_required():
+    """A gated tool's propose payload surfaces as a confirm_required intent
+    carrying the nonce and the human-readable label for the button."""
+    steps = [("abandon_career_plan", json.dumps({
+        "success": True,
+        "action": "confirm_required",
+        "nonce": "abc123",
+        "label": "Abandon your plan 'Become an ML engineer'?",
+    }))]
+    intent, action_data = _extract_intent(steps)
+    assert intent == "confirm_required"
+    parsed = json.loads(action_data)
+    assert parsed["nonce"] == "abc123"
+    assert parsed["label"] == "Abandon your plan 'Become an ML engineer'?"
+
+
+def test_extract_intent_ignores_confirm_payload_without_nonce():
+    """A malformed propose payload must not produce a button with no nonce."""
+    steps = [("abandon_career_plan", json.dumps({
+        "success": True,
+        "action": "confirm_required",
+        "label": "Abandon?",
+    }))]
+    intent, _ = _extract_intent(steps)
+    assert intent is None

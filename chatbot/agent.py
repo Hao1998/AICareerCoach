@@ -186,10 +186,23 @@ def _extract_intent(tool_steps):
     tool's return value (typically a JSON string). Framework-agnostic — works
     for both AgentExecutor and LangGraph once adapted to this shape.
     """
+    from chatbot.gated_actions import GATED_TOOL_NAMES
+
     intent = None
     action_data = None
     for tool_name, tool_output in tool_steps:
-        if tool_name == "find_top_jobs":
+        if tool_name in GATED_TOOL_NAMES:
+            try:
+                parsed = json.loads(tool_output) if isinstance(tool_output, str) else tool_output
+                if parsed.get("action") == "confirm_required" and parsed.get("nonce"):
+                    intent = "confirm_required"
+                    action_data = json.dumps({
+                        "nonce": parsed["nonce"],
+                        "label": parsed.get("label", "Confirm"),
+                    })
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+        elif tool_name == "find_top_jobs":
             try:
                 parsed = json.loads(tool_output) if isinstance(tool_output, str) else tool_output
                 if parsed.get("success") and parsed.get("action") == "redirect_to_jobs":

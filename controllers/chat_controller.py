@@ -15,6 +15,8 @@ from factory import limiter
 from models import db, ChatMessage
 from services.db_lock import safe_commit
 from services.input_guard import scan_message
+from services.pending_actions import claim
+from chatbot.gated_actions import execute_confirmed
 from schemas.request_schemas import ChatMessageRequest
 from schemas.validate import validate_json
 
@@ -62,6 +64,41 @@ def chat_api(validated: ChatMessageRequest):
     except Exception:
         logger.exception("Chat request failed for user %s", current_user.id)
         return jsonify({"success": False, "error": "Something went wrong processing your message. Please try again."}), 500
+
+
+@chat_bp.route('/api/chat/confirm', methods=['POST'])
+@login_required
+@limiter.limit("10 per minute")
+def confirm_action():
+    """Execute a previously proposed gated capability.
+
+    The client sends ONLY a nonce. The capability name and its arguments were
+    resolved server-side when the action was proposed and are read from the
+    store — anything else in the request body is ignored on purpose, so
+    neither the model nor a tampered client can change what runs.
+    """
+    body = request.get_json(silent=True) or {}
+    nonce = body.get('nonce')
+    if not isinstance(nonce, str) or not nonce:
+        return jsonify({"success": False, "error": "Missing confirmation token."}), 400
+
+    pending = claim(current_user.id, nonce)
+    if pending is None:
+        return jsonify({
+            "success": False,
+            "error": "This action has expired or was already used. Ask me again if you still want it.",
+        }), 400
+
+    try:
+        result = execute_confirmed(current_app._get_current_object(), current_user.id, pending)
+    except Exception:
+        logger.exception("Confirmed action failed for user %s", current_user.id)
+        return jsonify({"success": False, "error": "That action failed. Please try again."}), 500
+
+    return jsonify({
+        "success": result.get("success", False),
+        "message": result.get("message", ""),
+    })
 
 
 @chat_bp.route('/api/chat/history', methods=['GET'])
