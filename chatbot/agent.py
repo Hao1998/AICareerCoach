@@ -40,35 +40,62 @@ def _sanitize(text: str) -> str:
     return text
 
 
+_ROADMAP_EXCERPT_CAP = 600
+
+
 def plan_status_summary(user_id: int) -> str:
-    """One-line summary of the user's active plan, pre-loaded into the prompt.
+    """One-line-ish summary of the user's most relevant plan, pre-loaded into the prompt.
 
     This replaces the plan-status tool that was removed from the tool set. It
     is one cheap query that is useful context on every turn, which is the
     signal it belongs in the prompt rather than behind a tool call.
+
+    Falls back to the most recently created plan when there is no 'active'
+    one — get_active_plan() filters on status='active' only, and execute_plan
+    flips a plan's status to 'completed' as soon as the synthesis step
+    succeeds. Without the fallback, a finished roadmap becomes unreachable:
+    there is no tool to fetch it and nothing else surfaces it in the app.
     """
     from chatbot.planner import get_active_plan, SYNTHESIS_MARKER
-    from models import PlanStep
+    from models import TaskPlan, PlanStep
 
-    plan = get_active_plan(user_id)
+    plan = get_active_plan(user_id) or (
+        TaskPlan.query.filter_by(user_id=user_id)
+        .order_by(TaskPlan.created_at.desc())
+        .first()
+    )
     if not plan:
         return "Active career plan: none."
 
     steps = PlanStep.query.filter_by(plan_id=plan.id).all()
     done = sum(1 for s in steps if s.status == 'done')
-    synthesis = (PlanStep.query
-                 .filter_by(plan_id=plan.id, status='done')
-                 .filter(PlanStep.description.startswith(SYNTHESIS_MARKER))
-                 .first())
-
-    roadmap_note = (
-        " The roadmap is ready — offer to walk them through it."
-        if synthesis else
-        " Still running."
+    total = len(steps)
+    synthesis = next(
+        (s for s in steps if s.status == 'done' and s.description.startswith(SYNTHESIS_MARKER)),
+        None,
     )
+
+    if synthesis and synthesis.result_summary:
+        roadmap = synthesis.result_summary
+        excerpt = roadmap[:_ROADMAP_EXCERPT_CAP]
+        if len(roadmap) > _ROADMAP_EXCERPT_CAP:
+            excerpt += "... (truncated — use the full roadmap text on request)"
+        return (
+            f"Career plan (status: {plan.status}) for goal '{plan.goal}' is COMPLETE — "
+            f"the roadmap is ready. Excerpt:\n{excerpt}\n"
+            "Offer to walk the user through it or answer questions about it."
+        )
+
+    if plan.status == 'active':
+        return (
+            f"Active career plan: '{plan.goal}' — {done}/{total} steps complete. "
+            "Still running; no roadmap yet."
+        )
+
+    # completed-without-synthesis, abandoned, or failed
     return (
-        f"Active career plan: '{plan.goal}' — {done}/{len(steps)} steps complete."
-        f"{roadmap_note}"
+        f"Most recent career plan (status: {plan.status}) for goal '{plan.goal}' — "
+        f"{done}/{total} steps complete, no roadmap was produced."
     )
 
 

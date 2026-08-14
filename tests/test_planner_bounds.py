@@ -220,3 +220,115 @@ def test_unhandled_exception_does_not_overwrite_a_completed_plan(app_sqlite, mon
         assert refreshed.status == "completed", (
             "exception handler overwrote a legitimate terminal status"
         )
+
+
+# ── plan_status_summary ─────────────────────────────────────────────────────
+#
+# chatbot/agent.py's plan_status_summary(user_id) is pre-loaded into the
+# system prompt every turn. The deleted get_career_plan_status tool used to
+# fall back to the most recent plan when get_active_plan() (status='active'
+# only) came back empty. execute_plan flips a plan's status to 'completed' as
+# soon as the synthesis step succeeds, so without that fallback a finished
+# roadmap becomes permanently unreachable — nothing else in the app surfaces
+# TaskPlan/PlanStep. These tests cover the fallback and the bounded-length
+# roadmap excerpt.
+
+from chatbot.agent import plan_status_summary
+
+
+def test_plan_status_summary_no_plan(app_sqlite):
+    with app_sqlite.app_context():
+        user = User(username="noplan", email="noplan@example.com")
+        user.set_password("x")
+        db.session.add(user)
+        db.session.commit()
+
+        assert plan_status_summary(user.id) == "Active career plan: none."
+
+
+def test_plan_status_summary_active_plan_reports_progress(app_sqlite):
+    with app_sqlite.app_context():
+        user = User(username="active-plan-user", email="active-plan@example.com")
+        user.set_password("x")
+        db.session.add(user)
+        db.session.commit()
+
+        plan = TaskPlan(user_id=user.id, goal="become a PM", status="active")
+        db.session.add(plan)
+        db.session.commit()
+
+        db.session.add_all([
+            PlanStep(plan_id=plan.id, step_order=1, description="research", status="done"),
+            PlanStep(plan_id=plan.id, step_order=2, description="skills gap", status="pending"),
+        ])
+        db.session.commit()
+
+        summary = plan_status_summary(user.id)
+        assert "become a PM" in summary
+        assert "1/2" in summary
+        assert "Still running" in summary
+
+
+def test_plan_status_summary_completed_plan_surfaces_roadmap(app_sqlite):
+    """Regression test: this must FAIL against the pre-fix plan_status_summary,
+    which only calls get_active_plan() and so reports 'none' once execute_plan
+    has flipped the plan to 'completed'."""
+    with app_sqlite.app_context():
+        from chatbot.planner import SYNTHESIS_MARKER
+
+        user = User(username="completed-summary-user", email="completed-summary@example.com")
+        user.set_password("x")
+        db.session.add(user)
+        db.session.commit()
+
+        plan = TaskPlan(user_id=user.id, goal="become an ML engineer", status="completed")
+        db.session.add(plan)
+        db.session.commit()
+
+        roadmap_text = "Step 1: learn Python. Step 2: learn ML fundamentals."
+        db.session.add_all([
+            PlanStep(plan_id=plan.id, step_order=1, description="research", status="done"),
+            PlanStep(
+                plan_id=plan.id, step_order=2,
+                description=f"{SYNTHESIS_MARKER} build roadmap",
+                status="done", result_summary=roadmap_text,
+            ),
+        ])
+        db.session.commit()
+
+        summary = plan_status_summary(user.id)
+        assert "none" not in summary.lower(), (
+            "completed plan's roadmap was dropped — fallback to most-recent plan is missing"
+        )
+        assert "become an ML engineer" in summary
+        assert roadmap_text in summary
+        assert "COMPLETE" in summary or "complete" in summary.lower()
+
+
+def test_plan_status_summary_truncates_long_roadmap(app_sqlite):
+    with app_sqlite.app_context():
+        from chatbot.planner import SYNTHESIS_MARKER
+        from chatbot.agent import _ROADMAP_EXCERPT_CAP
+
+        user = User(username="long-roadmap-user", email="long-roadmap@example.com")
+        user.set_password("x")
+        db.session.add(user)
+        db.session.commit()
+
+        plan = TaskPlan(user_id=user.id, goal="become a data scientist", status="completed")
+        db.session.add(plan)
+        db.session.commit()
+
+        long_roadmap = "X" * (_ROADMAP_EXCERPT_CAP + 500)
+        db.session.add(PlanStep(
+            plan_id=plan.id, step_order=1,
+            description=f"{SYNTHESIS_MARKER} build roadmap",
+            status="done", result_summary=long_roadmap,
+        ))
+        db.session.commit()
+
+        summary = plan_status_summary(user.id)
+        # The full untruncated roadmap must not appear verbatim in the prompt.
+        assert long_roadmap not in summary
+        assert "X" * _ROADMAP_EXCERPT_CAP in summary
+        assert "truncat" in summary.lower()
