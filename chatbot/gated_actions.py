@@ -49,14 +49,33 @@ def run_job_scout(app, user_id: int, reason: str) -> dict:
             return {"success": False, "message": f"The Job Scout run failed: {exc}"}
 
 
-def abandon_plan(app, user_id: int, reason: str) -> dict:
-    """Mark the user's active career plan abandoned. Destroys work, no undo."""
-    with app.app_context():
-        from chatbot.planner import get_active_plan
+def abandon_plan(app, user_id: int, reason: str, plan_id: int | None = None) -> dict:
+    """Mark the user's active career plan abandoned. Destroys work, no undo.
 
-        plan = get_active_plan(user_id)
-        if not plan:
-            return {"success": False, "message": "You have no active plan to abandon."}
+    `plan_id` pins the exact plan resolved at propose() time so a stale
+    confirmation nonce cannot be replayed against whatever happens to be
+    "the active plan" at click time (which may be a different plan than the
+    one the user actually consented to abandon). If `plan_id` is None, fall
+    back to resolving the active plan at execution time — this is only for
+    backward compatibility with a pending action minted before this field
+    existed; it may still be live in Redis within the 300s TTL.
+    """
+    with app.app_context():
+        from models import TaskPlan
+
+        if plan_id is not None:
+            plan = TaskPlan.query.filter_by(id=plan_id, user_id=user_id).first()
+            if not plan or plan.status != 'active':
+                return {
+                    "success": False,
+                    "message": "That plan is no longer active — nothing to abandon.",
+                }
+        else:
+            from chatbot.planner import get_active_plan
+
+            plan = get_active_plan(user_id)
+            if not plan:
+                return {"success": False, "message": "You have no active plan to abandon."}
 
         goal = plan.goal
         plan.status = 'abandoned'
@@ -72,7 +91,7 @@ CONFIRMED_EXECUTORS = {
         app, user_id, args.get("reason", "")
     ),
     "abandon_career_plan": lambda app, user_id, args: abandon_plan(
-        app, user_id, args.get("reason", "")
+        app, user_id, args.get("reason", ""), args.get("plan_id")
     ),
 }
 

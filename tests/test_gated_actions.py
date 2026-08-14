@@ -27,7 +27,7 @@ test_execute_confirmed_rejects_an_unknown_capability
 import pytest
 
 from chatbot import gated_actions
-from models import TaskPlan, db
+from models import TaskPlan, User, db
 
 
 def test_gated_tool_names_lists_both_capabilities():
@@ -95,3 +95,98 @@ def test_execute_confirmed_rejects_an_unknown_capability(app_sqlite, fake_redis)
             "args": {},
         })
         assert result["success"] is False
+
+
+def test_abandon_plan_by_id_abandons_the_intended_plan(app_sqlite, fake_redis):
+    """When a plan_id is supplied (the normal path since the fix), that exact
+    plan is abandoned regardless of what is currently "the active plan"."""
+    app = app_sqlite
+    with app.app_context():
+        plan = TaskPlan(user_id=1, goal="become an ML engineer", status="active")
+        db.session.add(plan)
+        db.session.commit()
+        plan_id = plan.id
+
+        result = gated_actions.abandon_plan(app, 1, "changed my mind", plan_id=plan_id)
+
+        assert result["success"] is True
+        db.session.expire_all()
+        assert TaskPlan.query.get(plan_id).status == "abandoned"
+
+
+def test_abandon_plan_stale_plan_id_is_a_noop_and_spares_the_newer_plan(app_sqlite, fake_redis):
+    """Regression test for the stale-nonce finding: a confirmation button
+    minted for plan X (now no longer 'active' — already abandoned via a
+    different, later button click) must not destroy whatever plan is active
+    now (plan Y), even though it is well within the nonce's 300s TTL. This
+    must fail against the pre-fix abandon_plan, which ignored plan_id
+    entirely and always re-resolved get_active_plan(user_id) — so clicking
+    the stale button for X would have abandoned Y instead.
+    """
+    app = app_sqlite
+    with app.app_context():
+        plan_x = TaskPlan(user_id=1, goal="plan X", status="active")
+        db.session.add(plan_x)
+        db.session.commit()
+        plan_x_id = plan_x.id
+
+        # Turn 2: a second button proposed and clicked for the same plan X,
+        # abandoning it for real.
+        plan_x.status = "abandoned"
+        db.session.commit()
+
+        # Turn 3: user creates a new plan Y, which becomes the active plan.
+        plan_y = TaskPlan(user_id=1, goal="plan Y", status="active")
+        db.session.add(plan_y)
+        db.session.commit()
+        plan_y_id = plan_y.id
+
+        # The stale turn-1 button for plan X is now clicked.
+        result = gated_actions.abandon_plan(app, 1, "reason", plan_id=plan_x_id)
+
+        assert result["success"] is False
+        db.session.expire_all()
+        assert TaskPlan.query.get(plan_y_id).status == "active", (
+            "stale confirmation destroyed the wrong (newer) plan"
+        )
+        assert TaskPlan.query.get(plan_x_id).status == "abandoned"
+
+
+def test_abandon_plan_refuses_a_plan_id_belonging_to_a_different_user(app_sqlite, fake_redis):
+    app = app_sqlite
+    with app.app_context():
+        owner = User(username="owner", email="owner@example.com")
+        owner.set_password("x")
+        attacker = User(username="attacker", email="attacker@example.com")
+        attacker.set_password("x")
+        db.session.add_all([owner, attacker])
+        db.session.commit()
+
+        plan = TaskPlan(user_id=owner.id, goal="owner's plan", status="active")
+        db.session.add(plan)
+        db.session.commit()
+        plan_id = plan.id
+
+        result = gated_actions.abandon_plan(app, attacker.id, "reason", plan_id=plan_id)
+
+        assert result["success"] is False
+        db.session.expire_all()
+        assert TaskPlan.query.get(plan_id).status == "active"
+
+
+def test_abandon_plan_without_plan_id_falls_back_to_active_plan(app_sqlite, fake_redis):
+    """Backward compatibility: a pending action minted before this field
+    existed (no plan_id in its stored args) must still work by falling back
+    to resolving the active plan at execution time."""
+    app = app_sqlite
+    with app.app_context():
+        plan = TaskPlan(user_id=1, goal="legacy pending action", status="active")
+        db.session.add(plan)
+        db.session.commit()
+        plan_id = plan.id
+
+        result = gated_actions.abandon_plan(app, 1, "reason", plan_id=None)
+
+        assert result["success"] is True
+        db.session.expire_all()
+        assert TaskPlan.query.get(plan_id).status == "abandoned"

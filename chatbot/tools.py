@@ -524,7 +524,10 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
             # Resolve the arguments server-side and freeze them into the pending
             # action. The client only ever echoes the nonce back.
             label = f"Abandon your plan '{plan.goal}'?"
-            nonce = propose(user_id, "abandon_career_plan", {"reason": reason}, label)
+            nonce = propose(
+                user_id, "abandon_career_plan",
+                {"reason": reason, "plan_id": plan.id}, label,
+            )
             return json.dumps({
                 "success": True,
                 "action": "confirm_required",
