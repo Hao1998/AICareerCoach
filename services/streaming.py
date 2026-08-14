@@ -11,9 +11,9 @@ Why a queue (not async)?
 
 Event types pushed onto the queue:
     {"type": "token",      "content": "..."}                     per token from the LLM
-    {"type": "tool_start", "tool": "find_top_jobs", "label": "Searching jobs…"}
+    {"type": "tool_start", "tool": "find_jobs_matching_resume", "label": "Searching jobs…"}
     {"type": "progress",   "label": "Ranking matches…"}          mid-tool sub-step
-    {"type": "tool_end",   "tool": "find_top_jobs"}
+    {"type": "tool_end",   "tool": "find_jobs_matching_resume"}
     {"type": "done",       "intent":  "...", "action_data": {...}}
     {"type": "error",      "error":   "..."}
     None                                              sentinel — stop streaming
@@ -50,11 +50,11 @@ def release_stream_slot(user_id: int) -> None:
 # ── Tool label map ────────────────────────────────────────────────────────────
 
 _TOOL_LABELS: dict[str, str] = {
-    "find_top_jobs":           "Searching jobs…",
+    "find_jobs_matching_resume": "Searching jobs…",
+    "lookup_job_by_title":       "Looking up job…",
     "get_resume_info":         "Reading your resume…",
     "tailor_resume_to_job":    "Tailoring your resume…",
     "get_job_history":         "Reviewing your match history…",
-    "search_job_by_title":     "Looking up job…",
     "trigger_job_scout_agent": "Preparing job scout run…",
     "search_memory":           "Searching memory…",
     "create_career_plan":      "Creating your career plan…",

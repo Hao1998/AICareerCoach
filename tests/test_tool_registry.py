@@ -22,8 +22,8 @@ import json
 from chatbot.tools import build_tools
 
 EXPECTED_CHAT_TOOLS = {
-    "find_top_jobs",
-    "search_job_by_title",
+    "find_jobs_matching_resume",
+    "lookup_job_by_title",
     "get_resume_info",
     "search_memory",
     "get_job_history",

@@ -94,8 +94,8 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
         return multiplier
 
     @tool
-    def find_top_jobs(query: str) -> str:
-        """Find the top matching jobs for the user based on their resume and the chat request. Use this when the user asks to find jobs, get job recommendations, or match their resume to jobs. The query parameter is exactly what the user said — include location, seniority, job type, and count if they mentioned them."""
+    def find_jobs_matching_resume(query: str) -> str:
+        """Find jobs that SEMANTICALLY match the user's resume, ranked by fit. Use this when the user wants recommendations, matches, or 'jobs for me' — anything where the resume is the basis for the search. NOT for looking up one specific known job title; use lookup_job_by_title for that. The query parameter is exactly what the user said — include location, seniority, job type, and count if they mentioned them."""
         with app.app_context():
             from jobs.utils import cosine_similarity
             from services.llm_service import run_job_search_planning
@@ -112,7 +112,7 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
                 _progress("Understanding your request…")
                 intent = run_job_search_planning(query)
                 logger.info(
-                    "find_top_jobs intent — keywords=%s location=%s seniority=%s "
+                    "find_jobs_matching_resume intent — keywords=%s location=%s seniority=%s "
                     "job_type=%s top_k=%d",
                     intent.keywords, intent.location, intent.seniority_level,
                     intent.job_type, intent.top_k,
@@ -214,12 +214,12 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
                     "count": len(jobs),
                 })
             except Exception as e:
-                logger.error("find_top_jobs error: %s", e)
+                logger.error("find_jobs_matching_resume error: %s", e)
                 return json.dumps({"success": False, "error": str(e)})
 
     @tool
     def get_resume_info(question: str) -> str:
-        """Answer questions about the user's resume, skills, experience, or qualifications. Use this when the user asks about their resume content, skills, strengths, or weaknesses."""
+        """Answer questions from the text of the user's uploaded RESUME DOCUMENT — their skills, experience, employment history, qualifications. NOT for things the user said in past chats; use search_memory for that."""
         with app.app_context():
             try:
                 return perform_qa(question, user_id)
@@ -312,8 +312,8 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
                 return json.dumps({"success": False, "error": str(e)})
 
     @tool
-    def search_job_by_title(title: str) -> str:
-        """Search for jobs in the database by job title or role name. Use this FIRST when the user wants to tailor their resume to a specific job title, so you can get the job's full description and requirements. Returns a list of matching jobs with their IDs. Accepts formats like 'AI Developer', 'AI Developer at Intellivon', or just a company name."""
+    def lookup_job_by_title(title: str) -> str:
+        """Look up specific job postings by LITERAL title or company name, returning their IDs. Use this when the user names a concrete role or employer — e.g. before tailoring a resume to it. NOT for resume-based recommendations; use find_jobs_matching_resume for that. Accepts 'AI Developer', 'AI Developer at Intellivon', or a company name alone."""
         with app.app_context():
             from models import JobPosting
             from sqlalchemy import or_, and_
@@ -362,7 +362,7 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
 
     @tool
     def tailor_resume_to_job(job_id: int) -> str:
-        """Tailor the user's resume to ATS-optimize it for a specific job posting. Returns keyword analysis, ATS score estimate (before/after), tailored resume sections (summary, skills, experience bullets), and formatting tips. Always call search_job_by_title first to get the job_id."""
+        """Tailor the user's resume to ATS-optimize it for a specific job posting. Returns keyword analysis, ATS score estimate (before/after), tailored resume sections (summary, skills, experience bullets), and formatting tips. Always call lookup_job_by_title first to get the job_id."""
         with app.app_context():
             from models import JobPosting
             from services.llm_service import run_resume_tailoring_structured
@@ -418,7 +418,7 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
 
     @tool
     def search_memory(query: str) -> str:
-        """Search long-term memory of past conversations with this user. Use this when you need to recall something the user mentioned in a previous session — their career goals, stated preferences, past experience details, or decisions made. Formulate the query as a short description of what you want to recall, e.g. 'user remote work preference' or 'user past experience at previous company'."""
+        """Recall what the user SAID IN PAST CONVERSATIONS — stated career goals, preferences, decisions, context they volunteered. NOT for resume content; use get_resume_info for that. Formulate the query as a short description of what to recall, e.g. 'user remote work preference'."""
         with app.app_context():
             from chatbot.memory import search_memories
             try:
@@ -534,8 +534,8 @@ def build_tools(app, user_id, *, surface: str, progress_cb=None):
                         "Tell them to click it. Do not call this tool again.",
             })
 
-    all_tools = [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_job_history,
-                 search_job_by_title, tailor_resume_to_job, search_memory,
+    all_tools = [find_jobs_matching_resume, get_resume_info, trigger_job_scout_agent, get_job_history,
+                 lookup_job_by_title, tailor_resume_to_job, search_memory,
                  create_career_plan, abandon_career_plan]
 
     if surface == "chat":

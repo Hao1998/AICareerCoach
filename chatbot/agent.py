@@ -43,9 +43,9 @@ def _sanitize(text: str) -> str:
 def plan_status_summary(user_id: int) -> str:
     """One-line summary of the user's active plan, pre-loaded into the prompt.
 
-    This replaces the get_career_plan_status tool. It is one cheap query that
-    is useful context on every turn, which is the signal it belongs in the
-    prompt rather than behind a tool call.
+    This replaces the plan-status tool that was removed from the tool set. It
+    is one cheap query that is useful context on every turn, which is the
+    signal it belongs in the prompt rather than behind a tool call.
     """
     from chatbot.planner import get_active_plan, SYNTHESIS_MARKER
     from models import PlanStep
@@ -117,12 +117,12 @@ Username: {user.username}
 {plan_status}
 
 You have access to the following tools to help the user:
-1. find_top_jobs - Find matching jobs based on their resume (preference-personalized if active)
+1. find_jobs_matching_resume - Find matching jobs based on their resume (preference-personalized if active)
 2. get_resume_info - Answer questions about their resume
 3. trigger_job_scout_agent - Run the automatic job scout agent
 4. get_job_history - Show recent job match results AND what preferences have been learned from the user's feedback history
-5. search_job_by_title - Search the job database by job title/role name (returns job IDs)
-6. tailor_resume_to_job - ATS-optimize the resume for a specific job (needs job_id from search_job_by_title)
+5. lookup_job_by_title - Search the job database by job title/role name (returns job IDs)
+6. tailor_resume_to_job - ATS-optimize the resume for a specific job (needs job_id from lookup_job_by_title)
 7. search_memory - Search long-term memory of what the user has said in past sessions (career goals, preferences, experience, decisions)
 8. create_career_plan - Create a multi-step career plan for complex goals (role transitions, interview prep, career roadmaps). Runs autonomously through plan→execute→replan loop.
 9. abandon_career_plan - Cancel the user's current active plan so they can start fresh
@@ -139,7 +139,7 @@ App features you can explain directly (no tool needed):
 
 Guidelines:
 1. Be friendly, professional, and encouraging.
-2. When asked to find jobs, use the find_top_jobs tool and present results clearly.
+2. When asked to find jobs, use the find_jobs_matching_resume tool and present results clearly.
 3. After finding jobs, tell the user they can click the "View Matching Jobs" button to see the filtered results.
 4. If personalization is active, mention that results are personalized based on their feedback.
 5. When asked about skills or resume content, use get_resume_info.
@@ -153,8 +153,8 @@ Guidelines:
 13. When the user references something from a past conversation ("you know I told you...", "like we discussed before", "remember when I said..."), use search_memory to recall the relevant context before responding.
 14. When giving personalised advice and the current conversation context is sparse, use search_memory proactively to check if the user has shared relevant background in past sessions.
 15. When the user asks to tailor, adjust, or optimize their resume for a specific job title or role:
-    a. If the job was already shown earlier in this conversation (e.g. from find_top_jobs results), use the job_id directly and call tailor_resume_to_job immediately — do NOT call search_job_by_title again.
-    b. If the job_id is not already known, call search_job_by_title first. You may pass "Title at Company" (e.g. "AI Developer at Intellivon") — it handles that format automatically.
+    a. If the job was already shown earlier in this conversation (e.g. from find_jobs_matching_resume results), use the job_id directly and call tailor_resume_to_job immediately — do NOT call lookup_job_by_title again.
+    b. If the job_id is not already known, call lookup_job_by_title first. You may pass "Title at Company" (e.g. "AI Developer at Intellivon") — it handles that format automatically.
     c. If jobs are found, pick the best match and call tailor_resume_to_job with its ID.
     d. Present the results clearly: show the ATS score improvement, missing keywords, the tailored Professional Summary, and the top rewritten experience bullets.
     e. If no jobs are found, tell the user to fetch jobs from the Jobs page first, then try again.
@@ -244,7 +244,7 @@ def _extract_intent(tool_steps):
                     })
             except (json.JSONDecodeError, TypeError, AttributeError):
                 pass
-        elif tool_name == "find_top_jobs":
+        elif tool_name == "find_jobs_matching_resume":
             try:
                 parsed = json.loads(tool_output) if isinstance(tool_output, str) else tool_output
                 if parsed.get("success") and parsed.get("action") == "redirect_to_jobs":
