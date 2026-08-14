@@ -151,3 +151,30 @@ def test_extract_intent_ignores_confirm_payload_without_nonce():
     }))]
     intent, _ = _extract_intent(steps)
     assert intent is None
+
+
+def test_extract_intent_confirm_required_survives_later_tool_step():
+    """confirm_required must take precedence over any later intent-bearing
+    tool step in the same turn. Before the fix, a turn that both proposed a
+    gated action AND called find_jobs_matching_resume would have the
+    confirm_required intent silently overwritten by redirect_to_jobs — the
+    confirmation button would never render even though a live, claimable
+    nonce exists in Redis. Confirmation gates a destructive/costly action, so
+    it must always win over a mere UI redirect."""
+    steps = [
+        ("abandon_career_plan", json.dumps({
+            "success": True,
+            "action": "confirm_required",
+            "nonce": "stay-visible",
+            "label": "Abandon your plan 'Become an ML engineer'?",
+        })),
+        ("find_jobs_matching_resume", json.dumps({
+            "success": True,
+            "action": "redirect_to_jobs",
+            "job_ids": [1, 2, 3],
+        })),
+    ]
+    intent, action_data = _extract_intent(steps)
+    assert intent == "confirm_required"
+    parsed = json.loads(action_data)
+    assert parsed["nonce"] == "stay-visible"

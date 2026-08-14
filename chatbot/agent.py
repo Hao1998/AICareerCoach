@@ -235,6 +235,14 @@ def _extract_intent(tool_steps):
     intent = None
     action_data = None
     for tool_name, tool_output in tool_steps:
+        # confirm_required always wins: it gates a destructive or costly
+        # action behind a live, single-use nonce. If a later tool step in
+        # the same turn (e.g. find_jobs_matching_resume) also sets an
+        # intent, it must never clobber this — otherwise the confirmation
+        # button never renders even though the nonce is claimable, and the
+        # user has no way to act on (or decline) the gated action.
+        if intent == "confirm_required":
+            break
         if tool_name in GATED_TOOL_NAMES:
             try:
                 parsed = json.loads(tool_output) if isinstance(tool_output, str) else tool_output
