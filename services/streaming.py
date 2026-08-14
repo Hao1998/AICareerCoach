@@ -53,12 +53,12 @@ _TOOL_LABELS: dict[str, str] = {
     "find_top_jobs":           "Searching jobs…",
     "get_resume_info":         "Reading your resume…",
     "tailor_resume_to_job":    "Tailoring your resume…",
-    "get_recent_matches":      "Fetching recent matches…",
+    "get_job_history":         "Reviewing your match history…",
     "search_job_by_title":     "Looking up job…",
-    "trigger_job_scout_agent": "Running job scout agent…",
-    "get_user_preferences":    "Checking your preferences…",
-    "explain_feature":         "Looking up help…",
+    "trigger_job_scout_agent": "Preparing job scout run…",
     "search_memory":           "Searching memory…",
+    "create_career_plan":      "Creating your career plan…",
+    "abandon_career_plan":     "Checking your active plan…",
 }
 
 

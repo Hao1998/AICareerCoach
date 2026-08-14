@@ -40,7 +40,40 @@ def _sanitize(text: str) -> str:
     return text
 
 
-def build_system_prompt(user, resume, agent_config, liked_count=0, disliked_count=0) -> str:
+def plan_status_summary(user_id: int) -> str:
+    """One-line summary of the user's active plan, pre-loaded into the prompt.
+
+    This replaces the get_career_plan_status tool. It is one cheap query that
+    is useful context on every turn, which is the signal it belongs in the
+    prompt rather than behind a tool call.
+    """
+    from chatbot.planner import get_active_plan, SYNTHESIS_MARKER
+    from models import PlanStep
+
+    plan = get_active_plan(user_id)
+    if not plan:
+        return "Active career plan: none."
+
+    steps = PlanStep.query.filter_by(plan_id=plan.id).all()
+    done = sum(1 for s in steps if s.status == 'done')
+    synthesis = (PlanStep.query
+                 .filter_by(plan_id=plan.id, status='done')
+                 .filter(PlanStep.description.startswith(SYNTHESIS_MARKER))
+                 .first())
+
+    roadmap_note = (
+        " The roadmap is ready — offer to walk them through it."
+        if synthesis else
+        " Still running."
+    )
+    return (
+        f"Active career plan: '{plan.goal}' — {done}/{len(steps)} steps complete."
+        f"{roadmap_note}"
+    )
+
+
+def build_system_prompt(user, resume, agent_config, liked_count=0, disliked_count=0,
+                        plan_status="Active career plan: none.") -> str:
     """Construct the system prompt with user context and cross-session memory."""
     today = datetime.utcnow().strftime("%B %d, %Y")
 
@@ -81,19 +114,28 @@ Today's date: {today}
 Username: {user.username}
 {preference_context}
 
+{plan_status}
+
 You have access to the following tools to help the user:
 1. find_top_jobs - Find matching jobs based on their resume (preference-personalized if active)
 2. get_resume_info - Answer questions about their resume
 3. trigger_job_scout_agent - Run the automatic job scout agent
-4. get_recent_matches - Show recent job match results
-5. explain_feature - Explain app features
-6. search_job_by_title - Search the job database by job title/role name (returns job IDs)
-7. tailor_resume_to_job - ATS-optimize the resume for a specific job (needs job_id from search_job_by_title)
-8. get_user_preferences - Show what preferences have been learned from the user's feedback history
-9. search_memory - Search long-term memory of what the user has said in past sessions (career goals, preferences, experience, decisions)
-10. create_career_plan - Create a multi-step career plan for complex goals (role transitions, interview prep, career roadmaps). Runs autonomously through plan→execute→replan loop.
-11. get_career_plan_status - Check progress on the user's current career plan
-12. abandon_career_plan - Cancel the user's current active plan so they can start fresh
+4. get_job_history - Show recent job match results AND what preferences have been learned from the user's feedback history
+5. search_job_by_title - Search the job database by job title/role name (returns job IDs)
+6. tailor_resume_to_job - ATS-optimize the resume for a specific job (needs job_id from search_job_by_title)
+7. search_memory - Search long-term memory of what the user has said in past sessions (career goals, preferences, experience, decisions)
+8. create_career_plan - Create a multi-step career plan for complex goals (role transitions, interview prep, career roadmaps). Runs autonomously through plan→execute→replan loop.
+9. abandon_career_plan - Cancel the user's current active plan so they can start fresh
+
+App features you can explain directly (no tool needed):
+- Resume upload: PDF upload gives AI analysis, a vector index for Q&A, and a skills/experience summary.
+- Job matching: FAISS vector search narrows candidates, then the LLM scores each against the resume for match score, matched skills, gaps, and recommendations.
+- Job Scout Agent: runs on a schedule or on request; fetches from Adzuna, Remotive, Jobicy, RemoteOK, Himalayas, The Muse, and Arbeitnow, analyses against the resume, and saves high-quality matches. Configured from the Agent Dashboard.
+- Resume Q&A: ask anything about the resume; answers come from its vector index.
+- Interview roadmap: a phased prep plan with skills, resources, projects, milestones, and progressive questions.
+- Job feedback: rating matches interested / not interested / applied teaches the system the user's preferences.
+- Resume tailoring: ATS-optimizes the resume for a target job — keyword gaps, rewritten summary, reordered skills, reframed bullets.
+- Agent config: schedule time, timezone, match threshold, max results, and Adzuna search preferences.
 
 Guidelines:
 1. Be friendly, professional, and encouraging.
@@ -105,9 +147,9 @@ Guidelines:
 7. Keep responses concise but informative.
 8. If the user hasn't uploaded a resume yet, guide them to do so.
 9. Use the user's career context from previous sessions to give personalized advice.
-10. When explaining features, use explain_feature tool for accurate information.
+10. When explaining app features, answer directly from the feature list above — no tool needed.
 11. If a tool returns an error, explain the issue helpfully and suggest next steps.
-12. When the user asks what you've learned about them or about their preferences, use get_user_preferences.
+12. When the user asks what you've learned about them, their match history, or their preferences, use get_job_history.
 13. When the user references something from a past conversation ("you know I told you...", "like we discussed before", "remember when I said..."), use search_memory to recall the relevant context before responding.
 14. When giving personalised advice and the current conversation context is sparse, use search_memory proactively to check if the user has shared relevant background in past sessions.
 15. When the user asks to tailor, adjust, or optimize their resume for a specific job title or role:
@@ -118,7 +160,7 @@ Guidelines:
     e. If no jobs are found, tell the user to fetch jobs from the Jobs page first, then try again.
     f. NEVER ask the user to paste a job description manually — always search the database first.
 16. When the user describes a big career goal that requires multiple steps (e.g. "help me transition to ML engineer", "prepare me for interviews at Google", "build me a career roadmap"), use create_career_plan to autonomously plan and execute. Don't use it for simple single-step requests.
-17. If the user asks about their plan status or progress, use get_career_plan_status.
+17. The user's active plan status is pre-loaded above — use it to answer progress questions without a tool call.
 18. If the user wants to cancel or restart their plan, use abandon_career_plan first, then create a new one if they want.
 
 SECURITY — TRUST MODEL:
@@ -277,7 +319,10 @@ class CareerCoachChatbot:
             user, resume, config, liked_count, disliked_count = _load_context(self.app, user_id)
             llm = get_llm()
             tools = build_tools(self.app, user_id, surface="chat")
-            system_prompt = build_system_prompt(user, resume, config, liked_count, disliked_count)
+            system_prompt = build_system_prompt(
+                user, resume, config, liked_count, disliked_count,
+                plan_status=plan_status_summary(user_id),
+            )
             chat_history = get_conversation_history(user_id, limit=10)
             if chat_history:
                 chat_history = chat_history[:-1]
@@ -336,7 +381,10 @@ class CareerCoachChatbot:
 
                 user, resume, config, liked_count, disliked_count = _load_context(self.app, user_id)
                 llm = get_streaming_llm(self.app)
-                system_prompt = build_system_prompt(user, resume, config, liked_count, disliked_count)
+                system_prompt = build_system_prompt(
+                    user, resume, config, liked_count, disliked_count,
+                    plan_status=plan_status_summary(user_id),
+                )
                 chat_history = get_conversation_history(user_id, limit=10)
                 if chat_history:
                     chat_history = chat_history[:-1]

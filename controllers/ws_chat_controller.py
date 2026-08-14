@@ -114,6 +114,7 @@ def handle_chat_message(data):
                     detect_session_boundary, _load_context, build_system_prompt,
                     get_conversation_history, build_tools, _build_agent, _invoke_agent,
                     _extract_intent, _tool_steps_from_messages, stream_fallback_text,
+                    plan_status_summary,
                 )
                 from services.llm_service import get_streaming_llm
 
@@ -132,7 +133,10 @@ def handle_chat_message(data):
 
                 user, resume, config, liked_count, disliked_count = _load_context(app, user_id)
                 llm = get_streaming_llm(app)
-                system_prompt = build_system_prompt(user, resume, config, liked_count, disliked_count)
+                system_prompt = build_system_prompt(
+                    user, resume, config, liked_count, disliked_count,
+                    plan_status=plan_status_summary(user_id),
+                )
                 chat_history = get_conversation_history(user_id, limit=10)
                 if chat_history:
                     chat_history = chat_history[:-1]
