@@ -305,24 +305,86 @@
         return div;
     }
 
+    function chatActionButton(label) {
+        const btn = document.createElement('button');
+        btn.className = 'chat-action-btn';
+        btn.type = 'button';
+        btn.textContent = label;          // textContent, never innerHTML
+        return btn;
+    }
+
+    function chatActionLink(href, label) {
+        const a = document.createElement('a');
+        a.className = 'chat-action-btn';
+        a.href = href;
+        a.textContent = label;            // textContent, never innerHTML
+        return a;
+    }
+
     function attachActionButtons(div, intent, actionData) {
-        if (intent === 'redirect_to_jobs' && actionData && actionData.job_ids) {
+        if (!actionData) return;
+
+        if (intent === 'redirect_to_jobs' && actionData.job_ids) {
             const ids = actionData.job_ids.join(',');
-            div.insertAdjacentHTML('beforeend',
-                '<br><a href="/jobs?ids=' + ids + '" class="chat-action-btn">View ' +
-                actionData.job_ids.length + ' Matching Jobs</a>');
+            const label = 'View ' + actionData.job_ids.length + ' Matching Jobs';
+            div.appendChild(document.createElement('br'));
+            div.appendChild(chatActionLink('/jobs?ids=' + encodeURIComponent(ids), label));
         }
-        if (intent === 'open_tailor_modal' && actionData && actionData.job_id) {
+
+        if (intent === 'open_tailor_modal' && actionData.job_id) {
+            // job.title and job.company originate from external job boards.
+            // They MUST go through textContent — building this with
+            // insertAdjacentHTML was a stored XSS.
             const job = actionData.job || {};
-            const label = job.title ? job.title + (job.company ? ' at ' + job.company : '') : 'Job';
+            const name = job.title
+                ? job.title + (job.company ? ' at ' + job.company : '')
+                : 'Job';
             const before = actionData.ats_before;
-            const after  = actionData.ats_after;
-            const scoreText = (before && before !== '?' && after && after !== '?')
+            const after = actionData.ats_after;
+            const score = (before && before !== '?' && after && after !== '?')
                 ? ' (' + before + '% → ' + after + '%)'
                 : '';
-            div.insertAdjacentHTML('beforeend',
-                '<br><a href="/jobs?ids=' + actionData.job_id + '&tailor=' + actionData.job_id +
-                '" target="_blank" class="chat-action-btn">View ATS Results for ' + label + scoreText + '</a>');
+            const id = encodeURIComponent(actionData.job_id);
+            const link = chatActionLink(
+                '/jobs?ids=' + id + '&tailor=' + id,
+                'View ATS Results for ' + name + score
+            );
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            div.appendChild(document.createElement('br'));
+            div.appendChild(link);
+        }
+
+        if (intent === 'confirm_required' && actionData.nonce) {
+            // The label embeds the user's plan goal — untrusted text, so
+            // textContent only (chatActionButton handles that).
+            const btn = chatActionButton(actionData.label || 'Confirm');
+            btn.addEventListener('click', function () {
+                btn.disabled = true;
+                btn.textContent = 'Working…';
+                fetch('/api/chat/confirm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nonce: actionData.nonce })
+                })
+                    .then(function (r) { return r.json(); })
+                    .catch(function () { return { success: false, error: 'Network error.' }; })
+                    .then(function (data) {
+                        btn.remove();
+                        // The result is rendered directly, NOT sent back through
+                        // the LLM — the outcome of a destructive action must not
+                        // be reportable by a hallucination.
+                        const out = document.createElement('div');
+                        out.className = 'chat-msg assistant';
+                        out.innerHTML = formatContent(
+                            data.message || data.error || 'Done.'
+                        );
+                        messagesEl.appendChild(out);
+                        scrollToBottom();
+                    });
+            });
+            div.appendChild(document.createElement('br'));
+            div.appendChild(btn);
         }
     }
 
