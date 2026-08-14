@@ -1,20 +1,35 @@
-Traceback (most recent call last):
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/evals/chat_eval.py", line 35, in <module>
-    from ragas.metrics.collections import Faithfulness
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/__init__.py", line 4, in <module>
-    from ragas.dataset_schema import EvaluationDataset, MultiTurnSample, SingleTurnSample
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/dataset_schema.py", line 15, in <module>
-    from ragas.cost import CostCallbackHandler
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/cost.py", line 8, in <module>
-    from ragas.utils import get_from_dict
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/utils.py", line 18, in <module>
-    from datasets import Dataset
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/evals/datasets.py", line 14, in <module>
-    from ragas.llms import llm_factory
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/llms/__init__.py", line 1, in <module>
-    from ragas.llms.base import (
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/llms/base.py", line 21, in <module>
-    from ragas._analytics import LLMUsageEvent, track
-  File "/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/_analytics.py", line 19, in <module>
-    from ragas.utils import get_debug_mode
-ImportError: cannot import name 'get_debug_mode' from partially initialized module 'ragas.utils' (most likely due to a circular import) (/Users/haoly/Documents/gitRepo/AICareerCoach/.venv/lib/python3.11/site-packages/ragas/utils.py)
+Creating dataset 'chat-response-quality-eval-v1' with 12 examples...
+Dataset 'chat-response-quality-eval-v1' created (12 examples).
+
+Running 12 questions through chat LLM (9 grounded, 3 boundary/hallucination checks)...
+View the evaluation results for experiment: 'chat-quality-9f9ea457' at:
+https://smith.langchain.com/o/17edd4ff-246f-4201-bd2a-34922d8ef0df/datasets/32827b37-cc3c-49e7-a14f-54a58c6ae522/compare?selectedSessions=37a2d644-85ab-4a0f-9f0b-7a57aa08ed5f
+
+
+0it [00:00, ?it/s]1it [00:18, 18.83s/it]2it [00:37, 18.80s/it]3it [01:11, 25.56s/it]4it [01:45, 29.09s/it]5it [02:10, 27.58s/it]6it [02:34, 26.17s/it]7it [02:57, 25.14s/it]8it [03:17, 23.59s/it]9it [03:32, 21.04s/it]10it [03:50, 19.89s/it]11it [04:11, 20.32s/it]12it [04:38, 22.40s/it]12it [04:38, 23.24s/it]
+
+── Per-question Results ─────────────────────────────────────────
+  faithful=1.00  relevant=1.00  What companies have I interviewed at previously?
+  faithful=0.75  relevant=1.00  What cloud platforms have I worked with?
+  faithful=1.00  relevant=0.50  Can you summarise my career trajectory in two sentences
+  faithful=0.91  relevant=1.00  What skill gaps do I have if I want a data engineering 
+  faithful=1.00  relevant=0.00  How many years of experience do I have?
+  faithful=0.33  relevant=0.50  What is my strongest skill for a backend engineering ro  <- possible hallucination
+  faithful=1.00  relevant=1.00  Do I have any mobile development experience?
+  faithful=1.00  relevant=1.00  What programming languages do I know?
+  faithful=1.00  relevant=1.00  What certifications do I hold?
+  faithful=1.00  relevant=1.00  Do I have any team leadership experience?
+  faithful=0.75  relevant=1.00  What measurable impact have I had in my career?
+  faithful=0.00  relevant=1.00  What is my expected salary?  <- possible hallucination
+
+── Aggregate Scores ─────────────────────────────────────────────
+  Faithfulness  (grounded in resume?)     : 0.81  (over 12 questions)
+  Relevance     (answers the question?)   : 0.83  (over 12 questions)
+
+── Quality Gates ────────────────────────────────────────────────
+  [PASS]  faithfulness: 0.81  (min: 0.80)
+  [PASS]  relevance: 0.83  (min: 0.75)
+
+Full details: https://smith.langchain.com  (project: testProjectAICareerCoach)
+
+All quality gates passed.
