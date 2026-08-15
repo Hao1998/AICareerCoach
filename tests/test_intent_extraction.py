@@ -7,7 +7,7 @@ responds.
 
 Background
 ----------
-When the chat agent calls a tool (e.g. find_top_jobs, tailor_resume_to_job) the
+When the chat agent calls a tool (e.g. find_jobs_matching_resume, tailor_resume_to_job) the
 tool returns a JSON payload that may contain an "action" key.  The chat controller
 reads that action and sends an intent + action_data to the frontend so it can
 react (redirect, open modal, etc.).
@@ -24,8 +24,8 @@ functions bridge the old contract to the new:
 
 What each test covers
 ---------------------
-test_extract_intent_redirect_from_find_top_jobs
-    find_top_jobs output with action=redirect_to_jobs produces the correct intent
+test_extract_intent_redirect_from_find_jobs_matching_resume
+    find_jobs_matching_resume output with action=redirect_to_jobs produces the correct intent
     and preserves the job_ids list.
 
 test_extract_intent_open_tailor_modal
@@ -57,9 +57,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from chatbot.agent import _extract_intent, _tool_steps_from_messages
 
 
-def test_extract_intent_redirect_from_find_top_jobs():
+def test_extract_intent_redirect_from_find_jobs_matching_resume():
     steps = [(
-        "find_top_jobs",
+        "find_jobs_matching_resume",
         json.dumps({"success": True, "action": "redirect_to_jobs", "job_ids": [1, 2, 3]}),
     )]
     intent, action_data = _extract_intent(steps)
@@ -91,7 +91,7 @@ def test_extract_intent_none_when_no_actionable_tool():
 
 
 def test_extract_intent_ignores_malformed_tool_output():
-    steps = [("find_top_jobs", "not-json")]
+    steps = [("find_jobs_matching_resume", "not-json")]
     intent, action_data = _extract_intent(steps)
     assert intent is None
     assert action_data is None
@@ -101,16 +101,16 @@ def test_tool_steps_from_messages_extracts_tool_calls():
     messages = [
         HumanMessage(content="find me jobs"),
         AIMessage(content="", tool_calls=[
-            {"name": "find_top_jobs", "args": {"query": "jobs"}, "id": "call_1"}
+            {"name": "find_jobs_matching_resume", "args": {"query": "jobs"}, "id": "call_1"}
         ]),
         ToolMessage(content=json.dumps({"success": True, "action": "redirect_to_jobs",
-                                        "job_ids": [7]}), name="find_top_jobs",
+                                        "job_ids": [7]}), name="find_jobs_matching_resume",
                     tool_call_id="call_1"),
         AIMessage(content="Here are your matches."),
     ]
     steps = _tool_steps_from_messages(messages)
     assert steps == [(
-        "find_top_jobs",
+        "find_jobs_matching_resume",
         json.dumps({"success": True, "action": "redirect_to_jobs", "job_ids": [7]}),
     )]
 
@@ -124,3 +124,57 @@ def test_extract_intent_end_to_end_from_messages():
     intent, action_data = _extract_intent(_tool_steps_from_messages(messages))
     assert intent == "open_tailor_modal"
     assert json.loads(action_data)["job_id"] == 9
+
+
+def test_extract_intent_confirm_required():
+    """A gated tool's propose payload surfaces as a confirm_required intent
+    carrying the nonce and the human-readable label for the button."""
+    steps = [("abandon_career_plan", json.dumps({
+        "success": True,
+        "action": "confirm_required",
+        "nonce": "abc123",
+        "label": "Abandon your plan 'Become an ML engineer'?",
+    }))]
+    intent, action_data = _extract_intent(steps)
+    assert intent == "confirm_required"
+    parsed = json.loads(action_data)
+    assert parsed["nonce"] == "abc123"
+    assert parsed["label"] == "Abandon your plan 'Become an ML engineer'?"
+
+
+def test_extract_intent_ignores_confirm_payload_without_nonce():
+    """A malformed propose payload must not produce a button with no nonce."""
+    steps = [("abandon_career_plan", json.dumps({
+        "success": True,
+        "action": "confirm_required",
+        "label": "Abandon?",
+    }))]
+    intent, _ = _extract_intent(steps)
+    assert intent is None
+
+
+def test_extract_intent_confirm_required_survives_later_tool_step():
+    """confirm_required must take precedence over any later intent-bearing
+    tool step in the same turn. Before the fix, a turn that both proposed a
+    gated action AND called find_jobs_matching_resume would have the
+    confirm_required intent silently overwritten by redirect_to_jobs — the
+    confirmation button would never render even though a live, claimable
+    nonce exists in Redis. Confirmation gates a destructive/costly action, so
+    it must always win over a mere UI redirect."""
+    steps = [
+        ("abandon_career_plan", json.dumps({
+            "success": True,
+            "action": "confirm_required",
+            "nonce": "stay-visible",
+            "label": "Abandon your plan 'Become an ML engineer'?",
+        })),
+        ("find_jobs_matching_resume", json.dumps({
+            "success": True,
+            "action": "redirect_to_jobs",
+            "job_ids": [1, 2, 3],
+        })),
+    ]
+    intent, action_data = _extract_intent(steps)
+    assert intent == "confirm_required"
+    parsed = json.loads(action_data)
+    assert parsed["nonce"] == "stay-visible"

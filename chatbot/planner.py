@@ -24,19 +24,29 @@ from services.db_lock import safe_commit, safe_flush
 # Marker used to identify the final synthesis step
 SYNTHESIS_MARKER = "SYNTHESIZE:"
 
+# Hard ceiling on the plan -> execute -> replan loop. execute_plan runs in an
+# unsupervised daemon thread, so this is the only thing bounding its LLM
+# spend. Kept at the value the loop has always used.
+MAX_PLAN_ITERATIONS = 15
+
 logger = logging.getLogger(__name__)
 
 # ── Available tools the planner can reference ─────────────────────────────────
 
-TOOL_DESCRIPTIONS = """Available tools:
-1. get_resume_info(question: str) — Answer questions about the user's resume, skills, experience
-2. find_top_jobs(query: str) — Find top 5 matching jobs based on resume
-3. get_recent_matches(limit: int) — Get recent job match history
-4. trigger_job_scout_agent(reason: str) — Run the job scout to fetch and match new jobs
-5. search_job_by_title(title: str) — Search the job database by title
-6. tailor_resume_to_job(job_id: int) — ATS-optimize resume for a specific job
-7. search_memory(query: str) — Search long-term memory of past conversations
-8. get_user_preferences(dummy: str) — Show learned job preferences from feedback"""
+def tool_descriptions(app, user_id: int) -> str:
+    """Render the planner's tool vocabulary from the actual planner-surface registry.
+
+    Generated rather than hand-maintained: the previous hardcoded string had
+    already drifted to listing 8 of 12 tools, and it named a gated capability
+    the planner surface cannot receive.
+    """
+    from chatbot.tools import build_tools
+
+    lines = ["Available tools:"]
+    for i, tool in enumerate(build_tools(app, user_id, surface="planner"), start=1):
+        summary = (tool.description or "").split(". ")[0].strip()
+        lines.append(f"{i}. {tool.name} — {summary}")
+    return "\n".join(lines)
 
 
 # ── Planner ───────────────────────────────────────────────────────────────────
@@ -48,22 +58,20 @@ PLANNER_PROMPT = ChatPromptTemplate.from_messages([
 
 Your plan MUST follow this exact structure — no exceptions:
 
-PHASE 1 — Context Gathering (1 to 4 tool steps, in this order as needed):
+PHASE 1 — Context Gathering (1 to 3 tool steps, in this order as needed):
   Step 1: get_resume_info — ask a specific question to extract the user's current skills and experience relevant to the target role
-  Step 2: find_top_jobs — search for jobs matching the target role to understand what the market requires
-  Step 3: get_recent_matches — check if the user already has good job matches for this role
-  Step 4: trigger_job_scout_agent — ONLY include if fresh job data is needed (i.e. step 3 might return stale or insufficient matches)
+  Step 2: find_jobs_matching_resume — search for jobs matching the target role to understand what the market requires
+  Step 3: get_job_history — check the user's existing matches and learned preferences for this role
 
 PHASE 2 — Synthesis (ALWAYS exactly one final step):
   Last step: tool_name must be null, description must start with "SYNTHESIZE: " followed by a one-line summary of what to synthesize.
   This step will use all Phase 1 results to produce a complete career roadmap.
 
 Rules:
-- Total steps = Phase 1 steps (1-4) + 1 synthesis step. Do not add any other step types.
-- tool_input for get_resume_info must be a specific question, e.g. "What are Hao's skills in LangChain, Python, and cloud platforms relevant to an AI Engineer role?"
-- tool_input for find_top_jobs must be a descriptive query, e.g. "Senior AI Agentic Engineer remote"
-- tool_input for get_recent_matches must be a plain integer as a string, e.g. "10"
-- tool_input for trigger_job_scout_agent must be a short reason string
+- Total steps = Phase 1 steps (1-3) + 1 synthesis step. Do not add any other step types.
+- tool_input for get_resume_info must be a specific question, e.g. "What are the user's skills in LangChain, Python, and cloud platforms relevant to an AI Engineer role?"
+- tool_input for find_jobs_matching_resume must be a descriptive query, e.g. "Senior AI Agentic Engineer remote"
+- tool_input for get_job_history must be a plain integer as a string, e.g. "10"
 - Be specific in every description — name the actual role and technologies involved
 """),
     ("human", """User goal: {goal}
@@ -106,7 +114,7 @@ def generate_plan(app, user_id: int, goal: str, llm) -> TaskPlan:
             "goal": goal,
             "user_context": user_context,
             "memories": memories,
-            "tool_descriptions": TOOL_DESCRIPTIONS,
+            "tool_descriptions": tool_descriptions(app, user_id),
         })
 
         task_plan = TaskPlan(user_id=user_id, goal=goal, status='active')
@@ -305,7 +313,7 @@ def replan(app, plan: TaskPlan, latest_result: str, llm) -> bool:
             "completed_summary": completed_summary,
             "remaining_summary": remaining_summary,
             "latest_result": latest_result[:500],
-            "tool_descriptions": TOOL_DESCRIPTIONS,
+            "tool_descriptions": tool_descriptions(app, plan.user_id),
         })
 
         if replan_result.is_complete:
@@ -374,7 +382,7 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
             llm = get_llm()
             logger.info("[execute_plan] LLM ready")
 
-            tools = build_tools(app, user_id)
+            tools = build_tools(app, user_id, surface="planner")
             tools_by_name = {t.name: t for t in tools}
             logger.info("[execute_plan] Tools built: %s", list(tools_by_name.keys()))
 
@@ -389,9 +397,8 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
             user_context_str = "\n".join(user_context_parts)
 
             step_results = []
-            max_iterations = 15
 
-            for iteration in range(max_iterations):
+            for iteration in range(MAX_PLAN_ITERATIONS):
                 # ── pick next pending step ───────────────────────────────────
                 next_step = (PlanStep.query
                              .filter_by(plan_id=plan_id, status='pending')
@@ -544,7 +551,7 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
                         "completed_summary": completed_summary,
                         "remaining_summary": remaining_summary,
                         "latest_result": result[:500],
-                        "tool_descriptions": TOOL_DESCRIPTIONS,
+                        "tool_descriptions": tool_descriptions(app, user_id),
                     })
 
                     if replan_result.is_complete:
@@ -580,6 +587,21 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
                 except Exception as replan_exc:
                     logger.error("[execute_plan] Replan failed (continuing anyway): %s", replan_exc)
 
+            else:
+                # Every terminal path inside the loop breaks. Reaching here means
+                # the iteration budget was exhausted with steps still pending.
+                # Without this, plan.status stays 'active' forever — and because
+                # get_active_plan() filters on 'active' and create_career_plan
+                # refuses while one exists, the user would be permanently locked
+                # out of creating new plans.
+                logger.warning(
+                    "[execute_plan] Plan %d exhausted MAX_PLAN_ITERATIONS (%d) "
+                    "with steps still pending — marking failed",
+                    plan_id, MAX_PLAN_ITERATIONS,
+                )
+                plan.status = 'failed'
+                safe_commit()
+
             # ── final summary ────────────────────────────────────────────────
             db.session.refresh(plan)
             all_steps = PlanStep.query.filter_by(plan_id=plan_id).order_by(PlanStep.step_order).all()
@@ -599,6 +621,19 @@ def execute_plan(app, user_id: int, plan_id: int, progress_cb=None) -> dict:
     except Exception as exc:
         logger.error("[execute_plan] ✗ UNHANDLED ERROR for plan %d:\n%s",
                      plan_id, traceback.format_exc())
+        # Leaving status='active' here would permanently lock the user out of
+        # creating new plans (get_active_plan filters on 'active', and
+        # create_career_plan refuses while one exists). Best-effort terminal
+        # status; never let bookkeeping mask the original error.
+        try:
+            with app.app_context():
+                db.session.rollback()
+                failed_plan = db.session.get(TaskPlan, plan_id)
+                if failed_plan is not None and failed_plan.status == 'active':
+                    failed_plan.status = 'failed'
+                    safe_commit()
+        except Exception:
+            logger.exception("[execute_plan] Could not mark plan %d failed", plan_id)
         return {}
 
 

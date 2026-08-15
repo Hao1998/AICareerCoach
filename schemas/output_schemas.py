@@ -72,8 +72,8 @@ class PlannedStep(BaseModel):
     description: str = Field(description="What this step accomplishes")
     tool_name: str | None = Field(
         default=None,
-        description="Tool to call: find_top_jobs, get_resume_info, get_recent_matches, "
-                    "trigger_job_scout_agent, tailor_resume_to_job, search_job_by_title, "
+        description="Tool to call: find_jobs_matching_resume, get_resume_info, get_job_history, "
+                    "tailor_resume_to_job, lookup_job_by_title, "
                     "search_memory, or null for LLM-only reasoning steps"
     )
     tool_input: str | None = Field(

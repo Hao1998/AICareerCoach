@@ -100,7 +100,7 @@ class ScriptedToolModel(BaseChatModel):
 
 
 @tool
-def find_top_jobs(query: str) -> str:
+def find_jobs_matching_resume(query: str) -> str:
     """Find jobs for the user."""
     return json.dumps({"success": True, "action": "redirect_to_jobs", "job_ids": [11, 22]})
 
@@ -108,11 +108,11 @@ def find_top_jobs(query: str) -> str:
 def test_agent_runs_tool_then_returns_final_text():
     model = ScriptedToolModel(responses=[
         AIMessage(content="", tool_calls=[
-            {"name": "find_top_jobs", "args": {"query": "jobs"}, "id": "c1"}
+            {"name": "find_jobs_matching_resume", "args": {"query": "jobs"}, "id": "c1"}
         ]),
         AIMessage(content="Here are your matches."),
     ])
-    agent = _build_agent(model, [find_top_jobs], "You are a career coach.")
+    agent = _build_agent(model, [find_jobs_matching_resume], "You are a career coach.")
     response_text, messages = _invoke_agent(agent, "find me jobs", [])
 
     assert response_text == "Here are your matches."
@@ -123,7 +123,7 @@ def test_agent_runs_tool_then_returns_final_text():
 
 def test_agent_direct_answer_no_tool():
     model = ScriptedToolModel(responses=[AIMessage(content="Hello, how can I help?")])
-    agent = _build_agent(model, [find_top_jobs], "You are a career coach.")
+    agent = _build_agent(model, [find_jobs_matching_resume], "You are a career coach.")
     response_text, messages = _invoke_agent(agent, "hi", [])
 
     assert response_text == "Hello, how can I help?"
@@ -133,7 +133,7 @@ def test_agent_direct_answer_no_tool():
 
 def test_agent_passes_chat_history_and_current_message():
     model = ScriptedToolModel(responses=[AIMessage(content="Recalled.")])
-    agent = _build_agent(model, [find_top_jobs], "sys prompt")
+    agent = _build_agent(model, [find_jobs_matching_resume], "sys prompt")
     history = [HumanMessage(content="earlier message"), AIMessage(content="earlier reply")]
     response_text, messages = _invoke_agent(agent, "now", history)
 

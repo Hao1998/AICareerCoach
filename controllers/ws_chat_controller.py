@@ -18,11 +18,21 @@ from factory import socketio
 from models import db, ChatMessage
 from services.db_lock import safe_commit
 from services.input_guard import scan_message
+from services.rate_limit import allow, CHAT_BUDGETS
 from services.streaming import acquire_stream_slot, release_stream_slot, WebSocketStreamHandler
 
 logger = logging.getLogger(__name__)
 
 _cancel_events: dict[int, threading.Event] = {}
+
+
+def chat_rate_guard(user_id: int) -> bool:
+    """Consume one chat message against the user's budget.
+
+    Mirrors the /api/chat route's flask-limiter config, which socket.io
+    events bypass entirely.
+    """
+    return allow("chat_ws", user_id, CHAT_BUDGETS)
 
 
 @socketio.on('connect')
@@ -65,6 +75,17 @@ def handle_chat_message(data):
     user_id = current_user.id
 
     try:
+        within_budget = chat_rate_guard(user_id)
+    except Exception:
+        logger.exception("Redis unavailable while rate limiting user %s", user_id)
+        emit('error', {'error': 'Chat is temporarily unavailable. Please try again shortly.'})
+        return
+
+    if not within_budget:
+        emit('error', {'error': 'Too many messages. Please slow down.'})
+        return
+
+    try:
         slot_acquired = acquire_stream_slot(user_id)
     except Exception:
         logger.exception("Redis unavailable while acquiring stream slot for user %s", user_id)
@@ -93,6 +114,7 @@ def handle_chat_message(data):
                     detect_session_boundary, _load_context, build_system_prompt,
                     get_conversation_history, build_tools, _build_agent, _invoke_agent,
                     _extract_intent, _tool_steps_from_messages, stream_fallback_text,
+                    plan_status_summary,
                 )
                 from services.llm_service import get_streaming_llm
 
@@ -111,12 +133,15 @@ def handle_chat_message(data):
 
                 user, resume, config, liked_count, disliked_count = _load_context(app, user_id)
                 llm = get_streaming_llm(app)
-                system_prompt = build_system_prompt(user, resume, config, liked_count, disliked_count)
+                system_prompt = build_system_prompt(
+                    user, resume, config, liked_count, disliked_count,
+                    plan_status=plan_status_summary(user_id),
+                )
                 chat_history = get_conversation_history(user_id, limit=10)
                 if chat_history:
                     chat_history = chat_history[:-1]
 
-                tools = build_tools(app, user_id, progress_cb=handler.push_progress)
+                tools = build_tools(app, user_id, surface="chat", progress_cb=handler.push_progress)
                 agent = _build_agent(llm, tools, system_prompt)
 
                 response_text, messages = _invoke_agent(

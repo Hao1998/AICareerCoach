@@ -13,16 +13,25 @@ import numpy as np
 from langchain_core.tools import tool
 from sqlalchemy.orm import joinedload
 
+from chatbot.gated_actions import GATED_TOOL_NAMES
 from models import AgentConfig, JobMatch, Resume, db
 from services.db_lock import safe_commit
 from services.job_service import find_matching_jobs
+from services.pending_actions import propose
+from services.rate_limit import allow, would_allow, PLAN_BUDGETS, SCOUT_BUDGETS
 from services.resume_service import get_resume_text, perform_qa
 
 logger = logging.getLogger(__name__)
 
 
-def build_tools(app, user_id, progress_cb=None):
+def build_tools(app, user_id, *, surface: str, progress_cb=None):
     """Return the list of LangChain tools bound to app + user_id.
+
+    surface: 'chat' or 'planner'. Keyword-only with no default on purpose —
+        the planner runs in a background thread with no user present, so it
+        must never receive a capability that requires confirmation. A caller
+        who forgets this argument gets a TypeError instead of silently
+        receiving the permissive set.
 
     progress_cb: optional callable(label: str) pushed mid-tool to update the UI.
     """
@@ -85,8 +94,8 @@ def build_tools(app, user_id, progress_cb=None):
         return multiplier
 
     @tool
-    def find_top_jobs(query: str) -> str:
-        """Find the top matching jobs for the user based on their resume and the chat request. Use this when the user asks to find jobs, get job recommendations, or match their resume to jobs. The query parameter is exactly what the user said — include location, seniority, job type, and count if they mentioned them."""
+    def find_jobs_matching_resume(query: str) -> str:
+        """Find jobs that SEMANTICALLY match the user's resume, ranked by fit. Use this when the user wants recommendations, matches, or 'jobs for me' — anything where the resume is the basis for the search. NOT for looking up one specific known job title; use lookup_job_by_title for that. The query parameter is exactly what the user said — include location, seniority, job type, and count if they mentioned them."""
         with app.app_context():
             from jobs.utils import cosine_similarity
             from services.llm_service import run_job_search_planning
@@ -103,7 +112,7 @@ def build_tools(app, user_id, progress_cb=None):
                 _progress("Understanding your request…")
                 intent = run_job_search_planning(query)
                 logger.info(
-                    "find_top_jobs intent — keywords=%s location=%s seniority=%s "
+                    "find_jobs_matching_resume intent — keywords=%s location=%s seniority=%s "
                     "job_type=%s top_k=%d",
                     intent.keywords, intent.location, intent.seniority_level,
                     intent.job_type, intent.top_k,
@@ -205,12 +214,12 @@ def build_tools(app, user_id, progress_cb=None):
                     "count": len(jobs),
                 })
             except Exception as e:
-                logger.error("find_top_jobs error: %s", e)
+                logger.error("find_jobs_matching_resume error: %s", e)
                 return json.dumps({"success": False, "error": str(e)})
 
     @tool
     def get_resume_info(question: str) -> str:
-        """Answer questions about the user's resume, skills, experience, or qualifications. Use this when the user asks about their resume content, skills, strengths, or weaknesses."""
+        """Answer questions from the text of the user's uploaded RESUME DOCUMENT — their skills, experience, employment history, qualifications. NOT for things the user said in past chats; use search_memory for that."""
         with app.app_context():
             try:
                 return perform_qa(question, user_id)
@@ -220,25 +229,33 @@ def build_tools(app, user_id, progress_cb=None):
 
     @tool
     def trigger_job_scout_agent(reason: str) -> str:
-        """Trigger the Job Scout Agent to automatically search for new jobs and find matches. Use this when the user asks to run the agent, scan for new jobs, or do an automatic job search."""
-        with app.app_context():
-            from flask import current_app
-            try:
-                _progress("Fetching jobs from all enabled sources…")
-                result = current_app.extensions['scheduler'].trigger_manual_run(user_id)
-                return json.dumps({
-                    "success": result['status'] == 'success',
-                    "matches_found": result.get('matches_found', 0),
-                    "jobs_analyzed": result.get('jobs_analyzed', 0),
-                    "jobs_fetched": result.get('jobs_fetched', 0),
-                })
-            except Exception as e:
-                logger.error("trigger_job_scout_agent error: %s", e)
-                return json.dumps({"success": False, "error": str(e)})
+        """Ask the user to confirm running the Job Scout Agent, which searches all enabled job sources for new matches. Use this when the user asks to run the agent, scan for new jobs, or do an automatic job search. This does NOT run the scout — it shows the user a confirmation button."""
+        if surface != "chat":
+            raise RuntimeError(
+                f"trigger_job_scout_agent requires a confirmable surface; got {surface!r}"
+            )
+
+        if not would_allow("scout_manual", user_id, SCOUT_BUDGETS):
+            return json.dumps({
+                "success": False,
+                "error": "You've reached the limit of 3 manual scout runs per hour. "
+                         "The scheduled runs will keep finding matches in the meantime.",
+            })
+
+        label = "Run the Job Scout now?"
+        nonce = propose(user_id, "trigger_job_scout_agent", {"reason": reason}, label)
+        return json.dumps({
+            "success": True,
+            "action": "confirm_required",
+            "nonce": nonce,
+            "label": label,
+            "note": "Confirmation required. The user has been shown a button. "
+                    "Tell them to click it. Do not call this tool again.",
+        })
 
     @tool
-    def get_recent_matches(limit: int = 5) -> str:
-        """Get the user's most recent job matches with scores and details. Use this when the user asks about their matches, previous results, or match history."""
+    def get_job_history(limit: int = 5) -> str:
+        """Get the user's recent job matches AND the job preferences the AI has learned from their feedback. Use this when the user asks about their matches, previous results, match history, what you've learned about them, their preferences, or how personalization works for them."""
         with app.app_context():
             try:
                 matches = (JobMatch.query
@@ -247,8 +264,16 @@ def build_tools(app, user_id, progress_cb=None):
                            .order_by(JobMatch.created_at.desc())
                            .limit(limit).all())
 
-                if not matches:
-                    return json.dumps({"success": True, "matches": [], "message": "No matches found yet."})
+                config = AgentConfig.query.filter_by(user_id=user_id).first()
+                liked = JobMatch.query.filter(
+                    JobMatch.user_id == user_id,
+                    JobMatch.user_feedback.in_(['interested', 'applied'])
+                ).order_by(JobMatch.feedback_at.desc()).limit(10).all()
+                disliked = JobMatch.query.filter_by(
+                    user_id=user_id, user_feedback='not_interested'
+                ).order_by(JobMatch.feedback_at.desc()).limit(5).all()
+
+                has_preferences = config is not None and config.preference_embedding is not None
 
                 return json.dumps({
                     "success": True,
@@ -263,32 +288,32 @@ def build_tools(app, user_id, progress_cb=None):
                         }
                         for m in matches
                     ],
+                    "personalization_active": has_preferences,
+                    "liked_count": len(liked),
+                    "disliked_count": len(disliked),
+                    "liked_jobs": [
+                        {"title": m.job.title, "company": m.job.company, "feedback": m.user_feedback}
+                        for m in liked if m.job
+                    ],
+                    "disliked_jobs": [
+                        {"title": m.job.title, "company": m.job.company}
+                        for m in disliked if m.job
+                    ],
+                    "message": (
+                        f"Personalization is active — learned from {len(liked)} liked "
+                        f"and {len(disliked)} disliked jobs."
+                        if has_preferences else
+                        "No preferences learned yet. Rate matches as 'interested' or "
+                        "'not interested' to enable personalized recommendations."
+                    ),
                 })
             except Exception as e:
-                logger.error("get_recent_matches error: %s", e)
+                logger.error("get_job_history error: %s", e)
                 return json.dumps({"success": False, "error": str(e)})
 
     @tool
-    def explain_feature(feature_name: str) -> str:
-        """Explain how a feature of the AI Career Coach app works. Use this when the user asks about how things work, what a feature does, or needs help understanding the app. Valid features: resume_upload, job_matching, job_scout_agent, resume_qa, interview_roadmap, job_feedback, fetch_jobs, agent_config."""
-        features = {
-            "resume_upload": "Upload your PDF resume to get an AI-powered analysis. The system extracts text, creates a vector index for Q&A, and provides a comprehensive summary of your skills, experience, and career trajectory.",
-            "job_matching": "The job matching system uses a two-stage approach: first, FAISS vector search finds the most relevant jobs quickly, then the LLM analyzes your resume against each job for detailed match scores, matched skills, skill gaps, and recommendations.",
-            "job_scout_agent": "The Job Scout Agent is an autonomous agent that runs on a schedule (or manually). It fetches new jobs from your enabled job sources (Adzuna, Remotive, Jobicy, RemoteOK, Himalayas, The Muse, Arbeitnow), analyzes them against your resume, and saves high-quality matches for you to review. Configure it and select your sources from the Agent Dashboard.",
-            "resume_qa": "Ask any question about your resume and get AI-powered answers. The system uses your resume's vector index to find relevant sections and provide accurate responses about your skills, experience, and qualifications.",
-            "interview_roadmap": "Generate a personalized preparation roadmap for any job. It creates a phased plan with skills to learn, resources, projects, milestones, and progressive interview questions tailored to your skill gaps.",
-            "job_feedback": "Provide feedback on job matches (interested, not interested, applied) to help the system learn your preferences. Over time, the agent learns to find better matches based on your feedback patterns.",
-            "fetch_jobs": "Fetch real job postings from multiple job boards: Adzuna, Remotive, Jobicy, RemoteOK, Himalayas, The Muse, and Arbeitnow. You can select which sources to use, filter by keywords and location, and all fetched jobs are stored for matching.",
-            "agent_config": "Configure the Job Scout Agent's behavior: schedule time, timezone, match threshold (minimum score to save), max results per run, and Adzuna search preferences (location, max jobs, max age).",
-            "resume_tailoring": "ATS-optimize your resume for a specific job. The system searches the job database for the target role, then uses an LLM to analyze keyword gaps, rewrite your Professional Summary, reorder your Skills section, and reframe up to 5 experience bullets using the job's language.",
-        }
-        result = features.get(feature_name.lower().strip(),
-                              f"Unknown feature: '{feature_name}'. Available: {', '.join(features.keys())}")
-        return result
-
-    @tool
-    def search_job_by_title(title: str) -> str:
-        """Search for jobs in the database by job title or role name. Use this FIRST when the user wants to tailor their resume to a specific job title, so you can get the job's full description and requirements. Returns a list of matching jobs with their IDs. Accepts formats like 'AI Developer', 'AI Developer at Intellivon', or just a company name."""
+    def lookup_job_by_title(title: str) -> str:
+        """Look up specific job postings by LITERAL title or company name, returning their IDs. Use this when the user names a concrete role or employer — e.g. before tailoring a resume to it. NOT for resume-based recommendations; use find_jobs_matching_resume for that. Accepts 'AI Developer', 'AI Developer at Intellivon', or a company name alone."""
         with app.app_context():
             from models import JobPosting
             from sqlalchemy import or_, and_
@@ -337,7 +362,7 @@ def build_tools(app, user_id, progress_cb=None):
 
     @tool
     def tailor_resume_to_job(job_id: int) -> str:
-        """Tailor the user's resume to ATS-optimize it for a specific job posting. Returns keyword analysis, ATS score estimate (before/after), tailored resume sections (summary, skills, experience bullets), and formatting tips. Always call search_job_by_title first to get the job_id."""
+        """Tailor the user's resume to ATS-optimize it for a specific job posting. Returns keyword analysis, ATS score estimate (before/after), tailored resume sections (summary, skills, experience bullets), and formatting tips. Always call lookup_job_by_title first to get the job_id."""
         with app.app_context():
             from models import JobPosting
             from services.llm_service import run_resume_tailoring_structured
@@ -392,48 +417,8 @@ def build_tools(app, user_id, progress_cb=None):
                 })
 
     @tool
-    def get_user_preferences(dummy: str = "") -> str:
-        """Show what job preferences the AI has learned from the user's feedback history. Use this when the user asks what you've learned about them, what their preferences are, or how personalization works for them."""
-        with app.app_context():
-            try:
-                config = AgentConfig.query.filter_by(user_id=user_id).first()
-                liked = JobMatch.query.filter(
-                    JobMatch.user_id == user_id,
-                    JobMatch.user_feedback.in_(['interested', 'applied'])
-                ).order_by(JobMatch.feedback_at.desc()).limit(10).all()
-                disliked = JobMatch.query.filter_by(
-                    user_id=user_id, user_feedback='not_interested'
-                ).order_by(JobMatch.feedback_at.desc()).limit(5).all()
-
-                has_preferences = config and config.preference_embedding is not None
-                return json.dumps({
-                    "success": True,
-                    "personalization_active": has_preferences,
-                    "liked_count": len(liked),
-                    "disliked_count": len(disliked),
-                    "liked_jobs": [
-                        {"title": m.job.title, "company": m.job.company, "feedback": m.user_feedback}
-                        for m in liked if m.job
-                    ],
-                    "disliked_jobs": [
-                        {"title": m.job.title, "company": m.job.company}
-                        for m in disliked if m.job
-                    ],
-                    "message": (
-                        f"Personalization is active. I've learned your preferences from "
-                        f"{len(liked)} jobs you liked and {len(disliked)} you disliked."
-                        if has_preferences else
-                        "No preferences learned yet. Rate some job matches as 'interested' or "
-                        "'not interested' to enable personalized recommendations."
-                    ),
-                })
-            except Exception as e:
-                logger.error("get_user_preferences error: %s", e)
-                return json.dumps({"success": False, "error": str(e)})
-
-    @tool
     def search_memory(query: str) -> str:
-        """Search long-term memory of past conversations with this user. Use this when you need to recall something the user mentioned in a previous session — their career goals, stated preferences, past experience details, or decisions made. Formulate the query as a short description of what you want to recall, e.g. 'user remote work preference' or 'user past experience at previous company'."""
+        """Recall what the user SAID IN PAST CONVERSATIONS — stated career goals, preferences, decisions, context they volunteered. NOT for resume content; use get_resume_info for that. Formulate the query as a short description of what to recall, e.g. 'user remote work preference'."""
         with app.app_context():
             from chatbot.memory import search_memories
             try:
@@ -465,6 +450,13 @@ def build_tools(app, user_id, progress_cb=None):
                     "success": False,
                     "error": "You already have an active plan. Complete or abandon it first.",
                     "current_plan": format_plan_status(existing),
+                })
+
+            if not allow("plan_create", user_id, PLAN_BUDGETS):
+                return json.dumps({
+                    "success": False,
+                    "error": "You've reached the limit of 5 new career plans per day. "
+                             "Your existing plan's roadmap is still available.",
                 })
 
             try:
@@ -501,8 +493,9 @@ def build_tools(app, user_id, progress_cb=None):
                     "goal": plan.goal,
                     "status": "running",
                     "message": (
-                        "Your plan has been created and is now executing autonomously in the background. "
-                        "Use get_career_plan_status to check progress at any time."
+                        "Your plan has been created and is now executing autonomously in the "
+                        "background. Progress appears in your context at the start of each "
+                        "turn — just ask and I'll tell you where it's up to."
                     ),
                     "steps": [
                         {"step_order": s.step_order, "description": s.description, "status": s.status}
@@ -514,58 +507,13 @@ def build_tools(app, user_id, progress_cb=None):
                 return json.dumps({"success": False, "error": str(e)})
 
     @tool
-    def get_career_plan_status(dummy: str = "") -> str:
-        """Check the status of the user's current career plan. Use this when the user asks about their plan progress, what steps have been completed, or what's next."""
-        with app.app_context():
-            from chatbot.planner import get_active_plan, format_plan_status, SYNTHESIS_MARKER
-            from models import TaskPlan, PlanStep
-
-            # Check active plan first, then fall back to most recent regardless of status
-            plan = get_active_plan(user_id) or (
-                TaskPlan.query
-                .filter_by(user_id=user_id)
-                .order_by(TaskPlan.created_at.desc())
-                .first()
+    def abandon_career_plan(reason: str = "") -> str:
+        """Ask the user to confirm abandoning their current active career plan. Use this when the user wants to cancel, restart, or change their career plan. This does NOT abandon the plan — it shows the user a confirmation button."""
+        if surface != "chat":
+            raise RuntimeError(
+                f"abandon_career_plan requires a confirmable surface; got {surface!r}"
             )
 
-            if not plan:
-                return json.dumps({
-                    "success": True,
-                    "has_plan": False,
-                    "message": "No career plan found. Ask me to create one with a specific goal!",
-                })
-
-            # Check if the synthesis (roadmap) step is done
-            synthesis_step = (PlanStep.query
-                              .filter_by(plan_id=plan.id, status='done')
-                              .filter(PlanStep.description.startswith(SYNTHESIS_MARKER))
-                              .first())
-
-            roadmap = synthesis_step.result_summary if synthesis_step else None
-
-            # Count progress
-            all_steps = PlanStep.query.filter_by(plan_id=plan.id).all()
-            done = sum(1 for s in all_steps if s.status == 'done')
-            total = len(all_steps)
-            still_running = any(s.status in ('pending', 'running') for s in all_steps)
-
-            return json.dumps({
-                "success": True,
-                "has_plan": True,
-                "status": plan.status,
-                "goal": plan.goal,
-                "progress": f"{done}/{total} steps completed",
-                "roadmap_ready": roadmap is not None,
-                # If roadmap is done, surface it directly so the LLM can present it.
-                # If still running, show step-by-step progress instead.
-                "roadmap": roadmap if roadmap else None,
-                "plan_progress": None if roadmap else format_plan_status(plan),
-                "still_running": still_running,
-            })
-
-    @tool
-    def abandon_career_plan(reason: str = "") -> str:
-        """Abandon the user's current active career plan. Use this when the user wants to cancel, restart, or change their career plan."""
         with app.app_context():
             from chatbot.planner import get_active_plan
 
@@ -573,13 +521,26 @@ def build_tools(app, user_id, progress_cb=None):
             if not plan:
                 return json.dumps({"success": False, "error": "No active plan to abandon."})
 
-            plan.status = 'abandoned'
-            safe_commit()
+            # Resolve the arguments server-side and freeze them into the pending
+            # action. The client only ever echoes the nonce back.
+            label = f"Abandon your plan '{plan.goal}'?"
+            nonce = propose(
+                user_id, "abandon_career_plan",
+                {"reason": reason, "plan_id": plan.id}, label,
+            )
             return json.dumps({
                 "success": True,
-                "message": f"Plan '{plan.goal}' has been abandoned. You can create a new one anytime.",
+                "action": "confirm_required",
+                "nonce": nonce,
+                "label": label,
+                "note": "Confirmation required. The user has been shown a button. "
+                        "Tell them to click it. Do not call this tool again.",
             })
 
-    return [find_top_jobs, get_resume_info, trigger_job_scout_agent, get_recent_matches,
-            explain_feature, search_job_by_title, tailor_resume_to_job, get_user_preferences,
-            search_memory, create_career_plan, get_career_plan_status, abandon_career_plan]
+    all_tools = [find_jobs_matching_resume, get_resume_info, trigger_job_scout_agent, get_job_history,
+                 lookup_job_by_title, tailor_resume_to_job, search_memory,
+                 create_career_plan, abandon_career_plan]
+
+    if surface == "chat":
+        return all_tools
+    return [t for t in all_tools if t.name not in GATED_TOOL_NAMES]
