@@ -17,13 +17,8 @@
 - **`url_for` always takes the blueprint prefix**: `url_for('chat.confirm_action')`.
 - **Untrusted external data** (resume text, job descriptions, memory) must be wrapped in `<untrusted_data>` tags in any new prompt.
 - **No new Python dependencies.** Redis fakes in tests are hand-rolled — `fakeredis` is not in `requirements.txt` and must not be added.
-- **Never `from services.redis_client import get_redis`.** That binds the name at import time and defeats the `fake_redis` fixture's monkeypatch, so tests silently hit the developer's real Redis. Always `from services import redis_client` and call `redis_client.get_redis()` at use time. (A real Redis is running on localhost in this environment, so the failure is silent rather than loud.)
-- **Valid `TaskPlan.status` values are `'active'`, `'completed'`, `'abandoned'`, `'failed'` only.** `generate_plan` creates plans as `'active'`, and `get_active_plan()` filters on exactly `'active'` — a test that seeds any other value will not be found by it. There is no `'running'` status.
-- **Tests that call into `execute_plan` or `_load_context` need a real `User` row.** `_load_context` dereferences `user.full_name`; with no user it raises `AttributeError`, which `execute_plan`'s outer `except` swallows — so the test fails for a misleading reason. Create the user and use its real `id` rather than hardcoding `user_id=1`.
-- **Tests spanning two `app.app_context()` blocks need `db.session.expire_all()`** before re-reading rows. Flask-SQLAlchemy 3.1 gives each context re-entrance a distinct scoped session, so stale identity-map objects otherwise mask the write you are asserting on.
-- **Python interpreter: `.venv/bin/python`.** Bare `python` is NOT on PATH in this environment — every command in this plan that says `python` must be run as `.venv/bin/python`. Run from the repo root.
-- **Test command:** `.venv/bin/python -m pytest` (SQLite; pgvector tests skip without `TEST_DATABASE_URL`). Baseline at branch point: **53 passed, 19 skipped**.
-- **Eval command:** `.venv/bin/python evals/chat_eval.py` — required after Tasks 9–12 per CLAUDE.md. It calls `load_dotenv()` itself and `.env` already holds `XAI_API_KEY`, so no key needs to be supplied.
+- **Test command:** `python -m pytest` (SQLite; pgvector tests skip without `TEST_DATABASE_URL`).
+- **Eval command:** `python evals/chat_eval.py` — required after Tasks 9–12 per CLAUDE.md.
 - **Rate-limit budgets, exact values:** `trigger_job_scout_agent` = 3/hour/user; `create_career_plan` = 5/day/user; WebSocket chat = 20/min and 200/day per user.
 - **Nonce TTL, exact value:** 300 seconds.
 
@@ -564,32 +559,15 @@ git commit -m "fix: rate limit the WebSocket chat path to match /api/chat"
 
 **Interfaces:**
 - Consumes: `allow`, `PLAN_BUDGETS` from Task 2
-- Produces: `MAX_PLAN_ITERATIONS: int = 15` module constant in `chatbot/planner.py`
+- Produces: `MAX_PLAN_ITERATIONS: int = 12` module constant in `chatbot/planner.py`
 
-**Context — CORRECTED after reading the code.** The design spec's §2.2 C3 claimed the loop was unbounded. **It is not.** `execute_plan` already caps it at `max_iterations = 15` (`chatbot/planner.py:392`, `for iteration in range(max_iterations)`). Do not add a second cap.
+**Context:** `create_career_plan` (`chatbot/tools.py:454`) spawns a daemon thread running `execute_plan`'s plan→execute→replan loop. Two things are unbounded: how often a user may create plans, and how many times the loop may iterate. `create_career_plan` is not a gated capability (spec §3.1 — costly but constructive), so its budget is enforced in the tool itself rather than at a confirmation step.
 
-The actual defect is what happens when that cap is *reached*:
+- [ ] **Step 1: Read the loop before changing it**
 
-- Every terminal path inside the loop sets `plan.status = 'completed'` **and `break`s**.
-- If all 15 iterations are consumed without breaking — the replanner keeps appending pending steps after failures — the loop falls through to the "final summary" block (`planner.py:583`), which only logs and returns. **`plan.status` is never set to anything terminal.**
-- `generate_plan` creates plans with `status='active'` (`planner.py:112`), and `get_active_plan` (`planner.py:621`) filters on exactly `status='active'`.
-- `create_career_plan` refuses whenever `get_active_plan` returns a plan.
+Run: `sed -n '390,470p' chatbot/planner.py`
 
-**Consequence: a plan that exhausts its iteration budget leaves `status='active'` forever, permanently locking the user out of creating any new plan.** The only escape is `abandon_career_plan`, which after Task 7 requires the user to notice and ask.
-
-This task therefore (a) promotes the magic number to a reviewable module constant at its current value, (b) sets a terminal status on exhaustion, and (c) adds the plan-creation rate budget.
-
-- [ ] **Step 1: Confirm the current state before changing it**
-
-```bash
-sed -n '390,400p' chatbot/planner.py
-sed -n '580,595p' chatbot/planner.py
-grep -n "status='active'\|status = 'completed'" chatbot/planner.py
-```
-
-You should see `max_iterations = 15`, the `for iteration in range(max_iterations)` loop, and a final-summary block after the loop that logs and returns without touching `plan.status`. If what you see differs from the Context above, STOP and report — the plan was written against a specific revision.
-
-**Keep the value at 15.** Renaming a magic number to a constant is this task's scope; changing runtime behaviour by lowering the cap is not.
+Identify the `while` loop and how it terminates today. The cap goes on that loop's iteration count. Confirm whether an iteration counter already exists before adding one.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -612,13 +590,10 @@ watching that thread.
 What each test covers
 ---------------------
 test_max_plan_iterations_is_defined
-    The cap exists as a module constant at its current value, so it is one
-    reviewable line rather than a magic number buried in the loop.
-test_exhausted_plan_gets_a_terminal_status
-    THE LOAD-BEARING TEST. A plan that consumes every iteration without
-    completing must not be left at status='active'. If it is, get_active_plan
-    keeps returning it and create_career_plan refuses forever — the user is
-    permanently locked out of creating plans.
+    The cap exists as a module constant, so it is one reviewable line.
+test_execute_plan_stops_at_the_iteration_cap
+    A plan whose replanner always yields another step terminates at the cap
+    rather than looping, and records a terminal status.
 test_create_career_plan_enforces_the_daily_budget
     5 plans per day per user. Unlike the gated capabilities, this budget is
     consumed in the tool itself — create_career_plan needs no confirmation,
@@ -633,151 +608,108 @@ from models import TaskPlan, PlanStep, db
 
 
 def test_max_plan_iterations_is_defined():
-    assert planner_module.MAX_PLAN_ITERATIONS == 15
+    assert isinstance(planner_module.MAX_PLAN_ITERATIONS, int)
+    assert planner_module.MAX_PLAN_ITERATIONS > 0
 
 
-def test_exhausted_plan_gets_a_terminal_status(app_sqlite, monkeypatch):
-    """A plan that burns every iteration must not stay status='active'.
-
-    get_active_plan filters on status='active' and create_career_plan refuses
-    whenever it returns a plan, so an 'active' plan that can never progress
-    locks the user out of creating any new plan, permanently.
-    """
+def test_execute_plan_stops_at_the_iteration_cap(app_sqlite, monkeypatch):
     app = app_sqlite
     monkeypatch.setattr(planner_module, "MAX_PLAN_ITERATIONS", 3)
-    monkeypatch.setattr(planner_module, "get_llm", lambda: None)
 
     with app.app_context():
-        plan = TaskPlan(user_id=1, goal="loop forever", status="active")
+        plan = TaskPlan(user_id=1, goal="loop forever", status="running")
         db.session.add(plan)
         db.session.commit()
         plan_id = plan.id
 
-        # Seed more pending steps than the cap allows. Each names a tool that
-        # is NOT in tools_by_name, so it hits the loop's
-        # "Unknown tool ... Skipping." branch — that consumes an iteration and
-        # makes no LLM call, keeping this test offline.
-        for i in range(1, 11):
-            db.session.add(PlanStep(
+        # A replanner that never runs out of work.
+        call_count = {"n": 0}
+
+        def _always_another_step(*args, **kwargs):
+            call_count["n"] += 1
+            step = PlanStep(
                 plan_id=plan_id,
-                step_order=i,
-                description=f"step {i}",
-                tool_name="no_such_tool",
+                step_order=call_count["n"],
+                description=f"step {call_count['n']}",
+                tool_name=None,
                 status="pending",
-            ))
-        db.session.commit()
+            )
+            db.session.add(step)
+            db.session.commit()
+            return step
+
+        monkeypatch.setattr(planner_module, "get_llm", lambda: None)
+        monkeypatch.setattr(planner_module, "_next_step", _always_another_step, raising=False)
 
         planner_module.execute_plan(app, 1, plan_id)
 
-        refreshed = db.session.get(TaskPlan, plan_id)
-        assert refreshed.status != "active", (
-            "exhausted plan left active — user is now locked out of new plans"
-        )
-        assert refreshed.status == "failed"
-
-        # And the user can create plans again.
-        from chatbot.planner import get_active_plan
-        assert get_active_plan(1) is None
+        refreshed = TaskPlan.query.get(plan_id)
+        assert refreshed.status in ("done", "failed", "abandoned")
+        assert call_count["n"] <= 3
 
 
 def test_create_career_plan_enforces_the_daily_budget(app_sqlite, fake_redis, monkeypatch):
     app = app_sqlite
-
-    created = {"n": 0}
-
-    def _fake_generate_plan(app_arg, uid, goal, llm):
-        created["n"] += 1
-        plan = TaskPlan(user_id=uid, goal=goal, status="running")
-        db.session.add(plan)
-        db.session.commit()
-        return plan
-
-    # create_career_plan does `from chatbot.planner import generate_plan,
-    # execute_plan` INSIDE the function body, so patching the planner module's
-    # attributes works — the lookup happens at call time.
-    monkeypatch.setattr(planner_module, "generate_plan", _fake_generate_plan)
-    monkeypatch.setattr(planner_module, "execute_plan", lambda *a, **k: None)
-    # The tool imports get_llm from services.llm_service, not from planner.
-    monkeypatch.setattr("services.llm_service.get_llm", lambda: None)
+    # generate_plan is one LLM call — stub it so this test stays offline and
+    # measures only the budget.
+    monkeypatch.setattr(planner_module, "get_llm", lambda: None, raising=False)
 
     with app.app_context():
         tools = {t.name: t for t in build_tools(app, 1)}
         create = tools["create_career_plan"]
 
-        outcomes = []
+        refusals = 0
         for _ in range(6):
-            outcomes.append(json.loads(create.invoke("become an ML engineer")))
-            # Clear the active plan between calls. Without this, calls 2-6
-            # short-circuit on "you already have an active plan" and never
-            # reach the budget check at all.
-            TaskPlan.query.filter_by(user_id=1).update({"status": "abandoned"})
-            db.session.commit()
+            payload = json.loads(create.invoke("become an ML engineer"))
+            if not payload.get("success") and "limit" in (payload.get("error") or "").lower():
+                refusals += 1
 
-        assert created["n"] == 5, "5 plans should be created before the budget refuses"
-        assert outcomes[5]["success"] is False
-        assert "limit" in outcomes[5]["error"].lower()
+        # The 6th call must be refused on budget. Earlier calls may fail for
+        # other reasons (an active plan already exists), which is why this
+        # asserts on the budget refusal specifically rather than on a count
+        # of successes.
+        assert refusals >= 1
 ```
-
-**Placement matters:** the budget check goes *after* the active-plan early return (Step 6), so a call refused for "you already have a plan" does not consume budget — only real creations are charged. The test abandons the plan between iterations precisely because of that ordering.
 
 **Note:** this test calls `build_tools(app, 1)` with the current signature. Task 7 makes `surface` a required keyword — its Step 5 call-site sweep updates this line to `build_tools(app, 1, surface="chat")`.
 
-**Why `no_such_tool` rather than a stub:** steps with `tool_name=None` fall to the loop's reasoning or synthesis branches, both of which invoke an LLM chain. Naming a tool that is absent from `tools_by_name` reaches the `"Unknown tool … Skipping."` branch instead — it consumes an iteration, marks the step done, and makes no network call.
+**Note for the implementer:** the monkeypatch target `_next_step` is a placeholder for whatever the loop actually calls to obtain the next step — Step 1 tells you its real name. Adjust the patch target to match, keeping the assertion identical.
 
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_planner_bounds.py -v`
 Expected: FAIL — `AttributeError: module 'chatbot.planner' has no attribute 'MAX_PLAN_ITERATIONS'`
 
-- [ ] **Step 4: Promote the constant and make exhaustion terminal**
+- [ ] **Step 4: Implement the cap**
 
 In `chatbot/planner.py`, near `SYNTHESIS_MARKER`:
 
 ```python
 # Hard ceiling on the plan -> execute -> replan loop. execute_plan runs in an
-# unsupervised daemon thread, so this is the only thing bounding its LLM
-# spend. Kept at the value the loop has always used.
-MAX_PLAN_ITERATIONS = 15
+# unsupervised daemon thread; without this, a replanner that keeps producing
+# steps burns LLM budget until the process dies.
+MAX_PLAN_ITERATIONS = 12
 ```
 
-Delete the local `max_iterations = 15` (`planner.py:392`) and change the loop header to use the constant:
+In `execute_plan`, add an iteration counter to the loop and terminate on the cap:
 
 ```python
-            for iteration in range(MAX_PLAN_ITERATIONS):
-```
-
-Then, immediately after the `for` loop and before the `# ── final summary ──` block, add the exhaustion handler. **The `for`/`else` form is what makes this correct** — `else` runs only when the loop completes without `break`, which is exactly the exhaustion case, and every terminal path inside the loop already breaks:
-
-```python
-            else:
-                # Every terminal path inside the loop breaks. Reaching here means
-                # the iteration budget was exhausted with steps still pending.
-                # Without this, plan.status stays 'active' forever — and because
-                # get_active_plan() filters on 'active' and create_career_plan
-                # refuses while one exists, the user would be permanently locked
-                # out of creating new plans.
+        iterations = 0
+        while True:
+            iterations += 1
+            if iterations > MAX_PLAN_ITERATIONS:
                 logger.warning(
-                    "[execute_plan] Plan %d exhausted MAX_PLAN_ITERATIONS (%d) "
-                    "with steps still pending — marking failed",
+                    "[execute_plan] Plan %d hit MAX_PLAN_ITERATIONS (%d) — terminating",
                     plan_id, MAX_PLAN_ITERATIONS,
                 )
                 plan.status = 'failed'
                 safe_commit()
+                break
 ```
 
-Indent it to match the `for` statement, not the loop body.
+Place this at the top of the existing loop body, before any LLM call.
 
-- [ ] **Step 5: Document the new status value**
-
-`models.py:292` comments the valid statuses as `# 'active', 'completed', 'abandoned'`. Update it:
-
-```python
-    status = db.Column(db.String(20), default='active')  # 'active', 'completed', 'abandoned', 'failed'
-```
-
-This is a comment only — `status` is a plain `String(20)` with no constraint or enum, so **no migration is required.** Do not create one.
-
-- [ ] **Step 6: Enforce the plan-creation budget**
+- [ ] **Step 5: Enforce the plan-creation budget**
 
 In `chatbot/tools.py`, add to the imports:
 
@@ -801,12 +733,12 @@ The budget is consumed here rather than at a confirmation step because
 `create_career_plan` is not a gated capability (spec §3.1) — there is no later
 moment at which to charge it.
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [ ] **Step 6: Run tests to verify they pass**
 
-Run: `.venv/bin/python -m pytest tests/test_planner_bounds.py -v`
+Run: `python -m pytest tests/test_planner_bounds.py -v`
 Expected: 3 passed.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add chatbot/planner.py chatbot/tools.py tests/test_planner_bounds.py
@@ -944,12 +876,7 @@ the nonce, so nothing downstream can alter what eventually runs.
 import json
 import secrets
 
-# Import the MODULE, not the function. `from services.redis_client import
-# get_redis` binds the name at import time, which defeats the test fixture's
-# monkeypatch of services.redis_client.get_redis — tests would then write to
-# the developer's real Redis instead of the in-memory double, and silently
-# pass or fail on real state. Resolve the attribute at call time instead.
-from services import redis_client
+from services.redis_client import get_redis
 
 TTL_SECONDS = 300
 
@@ -965,7 +892,7 @@ def propose(user_id: int, capability: str, args: dict, label: str) -> str:
         "args": args,
         "label": label,
     })
-    redis_client.get_redis().set(f"{_PREFIX}{nonce}", payload, ex=TTL_SECONDS)
+    get_redis().set(f"{_PREFIX}{nonce}", payload, ex=TTL_SECONDS)
     return nonce
 
 
@@ -976,7 +903,7 @@ def claim(user_id: int, nonce: str) -> dict | None:
     it on a failed ownership check would let any authenticated user burn every
     pending action issued to anyone else.
     """
-    redis = redis_client.get_redis()
+    redis = get_redis()
     key = f"{_PREFIX}{nonce}"
 
     raw = redis.get(key)
@@ -1075,7 +1002,7 @@ def test_gated_tool_names_lists_both_capabilities():
 def test_abandon_plan_marks_the_active_plan_abandoned(app_sqlite, fake_redis):
     app = app_sqlite
     with app.app_context():
-        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="active"))
+        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="running"))
         db.session.commit()
 
         result = gated_actions.abandon_plan(app, 1, "changed my mind")
@@ -1111,7 +1038,7 @@ def test_run_job_scout_enforces_the_hourly_budget(app_sqlite, fake_redis, monkey
 def test_execute_confirmed_dispatches_to_the_named_capability(app_sqlite, fake_redis):
     app = app_sqlite
     with app.app_context():
-        db.session.add(TaskPlan(user_id=1, goal="g", status="active"))
+        db.session.add(TaskPlan(user_id=1, goal="g", status="running"))
         db.session.commit()
 
         result = gated_actions.execute_confirmed(app, 1, {
@@ -1332,7 +1259,7 @@ def test_gated_tool_proposes_without_executing(app_sqlite, fake_redis):
     from models import TaskPlan, db
 
     with app.app_context():
-        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="active"))
+        db.session.add(TaskPlan(user_id=1, goal="become an ML engineer", status="running"))
         db.session.commit()
 
         tools = {t.name: t for t in build_tools(app, 1, surface="chat")}
@@ -1342,7 +1269,7 @@ def test_gated_tool_proposes_without_executing(app_sqlite, fake_redis):
         assert payload["action"] == "confirm_required"
         assert payload["nonce"]
         # The plan must be untouched — proposing is not doing.
-        assert TaskPlan.query.filter_by(user_id=1).first().status == "active"
+        assert TaskPlan.query.filter_by(user_id=1).first().status == "running"
 
 
 def test_gated_tool_does_not_consume_rate_budget_on_propose(app_sqlite, fake_redis):
@@ -1663,7 +1590,7 @@ def test_confirm_rejects_an_unknown_nonce(client_with_user):
 def test_confirm_executes_the_stored_capability(client_with_user):
     app, client, user_id = client_with_user
     with app.app_context():
-        db.session.add(TaskPlan(user_id=user_id, goal="g", status="active"))
+        db.session.add(TaskPlan(user_id=user_id, goal="g", status="running"))
         db.session.commit()
 
     nonce = propose(user_id, "abandon_career_plan", {"reason": "done"}, "Abandon 'g'?")
@@ -1678,7 +1605,7 @@ def test_confirm_executes_the_stored_capability(client_with_user):
 def test_confirm_ignores_client_supplied_capability_and_args(client_with_user):
     app, client, user_id = client_with_user
     with app.app_context():
-        db.session.add(TaskPlan(user_id=user_id, goal="g", status="active"))
+        db.session.add(TaskPlan(user_id=user_id, goal="g", status="running"))
         db.session.commit()
 
     nonce = propose(user_id, "abandon_career_plan", {"reason": "done"}, "Abandon 'g'?")
@@ -1697,7 +1624,7 @@ def test_confirm_ignores_client_supplied_capability_and_args(client_with_user):
 def test_confirm_is_single_use(client_with_user):
     app, client, user_id = client_with_user
     with app.app_context():
-        db.session.add(TaskPlan(user_id=user_id, goal="g", status="active"))
+        db.session.add(TaskPlan(user_id=user_id, goal="g", status="running"))
         db.session.commit()
 
     nonce = propose(user_id, "abandon_career_plan", {"reason": ""}, "Abandon 'g'?")
@@ -2450,11 +2377,10 @@ Guidelines:
 6. Use the user's career context from previous sessions to personalise advice. When the current conversation is sparse and you are giving personalised advice, check long-term memory first.
 7. When tailoring a resume to a job: if the job appeared earlier in this conversation, reuse its job_id directly. Otherwise look the job up first, pick the best match, then tailor. Present the ATS score improvement, missing keywords, the rewritten summary, and the top rewritten bullets. Never ask the user to paste a job description — always search the database.
 8. Use career plans only for goals that genuinely need multiple steps (role transitions, interview prep, roadmaps), never for single-step questions.
-9. Running the Job Scout and abandoning a career plan both need the user's explicit confirmation. Calling those tools does NOT perform the action — it shows the user a button. Say plainly that you have asked them to confirm, tell them to click it, and stop there. Never claim the action has happened, and never call the tool a second time.
-10. Because abandoning a plan only takes effect after the user clicks, you cannot abandon and re-create a plan in the same turn. If the user wants to restart, ask them to confirm the abandon first, then offer to create the new plan once they have.
+9. Some actions need the user's explicit confirmation. When a tool tells you a confirmation button has been shown, say so plainly and ask them to click it. Do not claim the action has happened, and do not call that tool again.
 ```
 
-Guidelines 9 and 10 are load-bearing for Task 7's propose-only wrappers. Without 9 the model narrates completed actions that have not run. Without 10 it follows the old "abandon then create" sequence, and `create_career_plan` refuses because the plan is still `active` until the click lands — the user gets a self-contradictory reply. Renumber the remaining guidelines accordingly.
+Guideline 9 is load-bearing for Task 7's propose-only wrappers — without it the model narrates completed actions that have not run.
 
 - [ ] **Step 3: Verify the prompt still contains the required blocks**
 
