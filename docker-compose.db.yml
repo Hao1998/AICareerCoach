@@ -1,0 +1,49 @@
+# Standalone local PostgreSQL (with pgvector) whose data lives inside this repo.
+# Works with the project's .venv Python — nothing about the app runs in Docker.
+#
+#   make db-up        # start + wait until healthy   (docker compose -f docker-compose.db.yml up -d --wait)
+#   make db-init      # create/upgrade the schema    (python scripts/init_postgres_schema.py)
+#   make run          # app on this DB, via DATABASE_URL in .env
+#   make test-pg      # Postgres tests, against the separate careercoach_test DB
+#   make db-down      # stop (data is kept)
+#   make db-reset     # wipe all data and start fresh (don't rm -rf .data/postgres itself)
+#
+# Data is bind-mounted at ./.data/postgres (gitignored + dockerignored).
+# First boot only: docker/postgres/init/*.sql enables pgvector and creates
+# careercoach_test (the test fixture drops all tables, so it must not share
+# the dev database).
+#
+#   DATABASE_URL=postgresql+psycopg://careercoach:localdev@localhost:5432/careercoach
+#   TEST_DATABASE_URL=postgresql+psycopg://careercoach:localdev@localhost:5432/careercoach_test
+#
+# Own project name, so it doesn't clash with the `postgres` service in
+# docker-compose.yml (named volume) — but both publish 5432, so run one at a time.
+name: careercoach-db
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: careercoach-postgres
+    environment:
+      POSTGRES_USER: careercoach
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: careercoach
+      # Keep the cluster in a subdirectory that initdb creates itself. Pointing
+      # PGDATA at the bind-mount root fails on Docker Desktop for macOS with
+      # "data directory has wrong ownership", leaving a half-initialised DB.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./.data/postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1: during first-boot init Postgres runs a temporary server on
+      # the unix socket only, so a TCP check can't report healthy before the
+      # init scripts (and the careercoach_test database) have finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U careercoach -d careercoach_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped

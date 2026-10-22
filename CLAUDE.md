@@ -35,6 +35,8 @@ AI-powered career coaching platform. Users upload resumes, get LLM-driven analys
 | `CELERY_RESULT_BACKEND` | No | Result backend for Celery; defaults to `REDIS_URL` |
 | `OTEL_EXPORTER_ENDPOINT` | No | OpenTelemetry tracing (opt-in) |
 | `SENTRY_DSN` | No | Sentry error tracking (opt-in) |
+| `VECTOR_BACKEND` | No | `redis` turns on the Redis vector search experiment (search + outbox writes); unset = off |
+| `REDIS_VECTOR_URL` | No | Redis with the query engine for that experiment; defaults to `redis://localhost:6380/0` |
 
 ---
 

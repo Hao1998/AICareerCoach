@@ -1,0 +1,35 @@
+# Redis for the vector search experiment (VECTOR_BACKEND=redis).
+#
+# A separate Redis from the one on 6379 (REDIS_URL: Celery broker, rate
+# limiting, BM25 cache). This one needs the query engine (FT.CREATE /
+# FT.SEARCH), which the local Homebrew Redis doesn't ship, and is published
+# on 6380 so the two never collide.
+#
+#   make redis-up        # start + wait until healthy
+#   make redis-rebuild   # load every active job from the DB into idx:jobs
+#   make redis-relay     # apply vector_outbox rows to Redis, printing each change
+#   make redis-cli       # redis-cli inside the container
+#   make redis-down      # stop (data is kept)
+#   make redis-reset     # wipe all Redis data and start fresh
+#
+# Data is bind-mounted at ./.data/redis (gitignored + dockerignored) and written
+# with appendonly, so the index survives restarts without a rebuild.
+#
+#   REDIS_VECTOR_URL=redis://localhost:6380/0
+name: careercoach-redis
+
+services:
+  redis:
+    image: redis:8.2
+    container_name: careercoach-redis-vectors
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./.data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
