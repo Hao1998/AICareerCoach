@@ -55,9 +55,13 @@ def pg_app(monkeypatch):
         # matches, then let Alembic apply only the pgvector migration on top —
         # running the full chain from empty would fail, since earlier
         # migrations assume their target tables/columns don't exist yet.
+        # Tables added in later migrations (vector_outbox, ef2562d3d929) are
+        # plain models.py tables that create_all() has already built, so stop
+        # at the pgvector migration and stamp the rest instead of re-creating them.
         from flask_migrate import stamp, upgrade
         stamp(revision='e9e97b70ce4c')
-        upgrade(revision='head')
+        upgrade(revision='3c81b22b9730')
+        stamp(revision='head')
 
         yield application
         db.session.remove()
@@ -65,6 +69,15 @@ def pg_app(monkeypatch):
         with db.engine.connect() as conn:
             conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
             conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _no_redis_fast_path(monkeypatch):
+    """Keep the outbox fast path from writing to a real Redis during tests.
+
+    Tests that exercise it patch services.vector_outbox._fast_path_store again.
+    """
+    monkeypatch.setattr("services.vector_outbox._fast_path_store", lambda: None)
 
 
 @pytest.fixture

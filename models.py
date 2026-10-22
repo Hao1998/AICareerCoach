@@ -131,6 +131,22 @@ class JobPosting(db.Model):
         }
 
 
+class VectorOutbox(db.Model):
+    """Transactional outbox for the Redis vector search experiment.
+
+    One row per job change that affects search, written in the same transaction
+    as the change (services/vector_outbox.py). The relay reads the job's current
+    state and applies it to Redis, so a row only needs the job id. No FK: the
+    job may have been hard-deleted by the time the relay runs.
+    """
+    __tablename__ = 'vector_outbox'
+
+    id = db.Column(db.Integer, primary_key=True)
+    job_id = db.Column(db.Integer, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime, nullable=True, index=True)
+
+
 class JobMatch(db.Model):
     """Model for storing CV-Job match results"""
     __tablename__ = 'job_matches'

@@ -106,6 +106,11 @@ def create_app(config_name='default', skip_api_check=False):
     # ── Extensions ────────────────────────────────────────────────────────────
     db.init_app(app)
     _register_sqlite_vec(app)
+    # Redis vector search experiment: no-op unless VECTOR_BACKEND=redis.
+    from services.vector_outbox import register_outbox_listener
+    register_outbox_listener(db.session)
+    from jobs.redis_vectors_cli import redis_vectors_cli
+    app.cli.add_command(redis_vectors_cli)
     migrate.init_app(app, db)
     login_manager.init_app(app)
     limiter.init_app(app)

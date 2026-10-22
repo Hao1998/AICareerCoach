@@ -190,8 +190,10 @@ cp .env.example .env
 # Development
 python app.py  # → http://localhost:5001
 
-# Production
-gunicorn wsgi:app -c gunicorn.conf.py
+# Production — one single-worker instance per port (Flask-SocketIO does not
+# support multiple gunicorn workers); nginx.conf load-balances them with ip_hash
+PORT=5001 gunicorn wsgi:app -c gunicorn.conf.py
+PORT=5002 gunicorn wsgi:app -c gunicorn.conf.py
 
 # Celery worker + beat (optional — required when USE_CELERY=true)
 celery -A celery_worker.celery worker --loglevel=info -Q scout
@@ -216,6 +218,55 @@ flask --app wsgi db upgrade
 # SQLite → PostgreSQL migration
 python scripts/migrate_sqlite_to_postgres.py
 ```
+
+### Redis Vector Search Experiment (opt-in)
+
+A learning experiment: answer dense job search from a RediSearch HNSW index
+(`FT.CREATE` / `FT.SEARCH`) instead of pgvector / FAISS, kept in sync with the
+database through a transactional outbox. Off unless `VECTOR_BACKEND=redis`.
+
+```bash
+make redis-up                                   # Redis 8 + query engine on :6380, data in .data/redis
+VECTOR_BACKEND=redis flask --app wsgi db upgrade  # adds the vector_outbox table
+make redis-rebuild                              # "indexed N jobs into idx:jobs"
+redis-cli -p 6380 FT.INFO idx:jobs              # num_docs N
+VECTOR_BACKEND=redis flask --app wsgi redis-vectors search "python backend engineer"
+
+make redis-relay                                # terminal 2: applies outbox rows, prints each change
+VECTOR_BACKEND=redis make run                   # terminal 3: deactivate a job in the UI
+# terminal 2 prints "delete job:<id>";  redis-cli -p 6380 EXISTS job:<id>  → 0
+# job matching logs "dense search via redis: … hits in … ms"
+```
+
+- **Data** lives in `.data/redis` (append-only file), so the index survives
+  `make redis-down` / restarts. `make redis-rebuild` reloads it from the
+  database (the source of truth); `make redis-reset` deletes the Redis data.
+- **Sync.** A SQLAlchemy `after_flush` listener (`services/vector_outbox.py`)
+  inserts a `vector_outbox` row in the same transaction as every job insert,
+  delete, or `embedding` / `is_active` change. Right after the commit, an
+  `after_commit` fast path applies those rows to Redis, so a new job is
+  searchable within milliseconds (the Job Scout matches immediately after
+  fetching). If that fails (Redis down, process killed), the rows stay
+  unprocessed and the relay applies them. Both read each job's *current* row
+  and upsert or delete `job:<id>`, so retries are harmless and two quick
+  changes collapse into one write.
+- **Why an outbox?** Writing to Postgres and then Redis from the app (dual
+  write) loses updates when the process dies between the two writes or
+  Redis is briefly unavailable. The outbox makes "change + note to sync"
+  atomic. It only sees ORM writes, though: raw SQL bypasses the listener —
+  the gap that change data capture (e.g. Debezium reading the Postgres WAL)
+  closes, at the cost of running more infrastructure.
+- **Fallback.** Any Redis error or timeout, a missing or not-fully-built index,
+  or an empty result logs a warning and falls back to pgvector / FAISS, so
+  matching keeps working. Only `make redis-rebuild` marks the index as built
+  (`idx:jobs:built_at`); an index the relay recreated after a reset holds just
+  a few jobs and is ignored until you rebuild.
+- **Every process needs the switch.** Set `VECTOR_BACKEND=redis` for the web
+  app *and* any Celery worker / beat, or jobs they write won't reach the outbox.
+- **Schema.** The walkthrough was verified on Postgres. On an empty Postgres
+  use `make db-init`. On SQLite `flask db upgrade` doesn't work (a
+  pre-existing issue), so create the table with `db.create_all()`. If the
+  table is missing, job writes still succeed and an error is logged.
 
 ## Project Structure
 

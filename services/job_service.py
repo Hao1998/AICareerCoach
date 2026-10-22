@@ -138,7 +138,9 @@ def _analyze_job(app, resume_text: str, job: JobPosting, similarity_score: float
 
 
 def _dense_search_faiss_threaded(app, resume_text: str, candidate_k: int):
-    """Run the FAISS dense-search branch inside a real OS thread, with app context.
+    """Run the SQLite dense-search branch inside a real OS thread, with app context.
+
+    With VECTOR_BACKEND=redis this is Redis first, then the FAISS fallback.
 
     FAISS and the HuggingFace embedding model are CPU-bound C extensions gevent
     cannot patch, so they need a real thread (see _run_in_thread above). Real
@@ -184,6 +186,9 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
         # _embed_query`) so it's the same seam dense_search() itself uses
         # internally, and so test monkeypatches of
         # "jobs.vector_store._embed_query" still take effect here.
+        # On SQLite with the Redis vector experiment on, dense_search() tries
+        # Redis and then falls back to FAISS — so it stays on the thread below,
+        # keeping that CPU-bound fallback off the greenlet.
         if is_postgres():
             query_vec = _run_in_thread(_vector_store_module._embed_query, resume_text)
             dense_results = dense_search(resume_text, candidate_k, query_vec=query_vec)

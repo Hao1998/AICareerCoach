@@ -5,13 +5,20 @@ Single entry point for stage-1 dense search over job postings. On PostgreSQL
 this is a pgvector index scan shared by every app instance; on SQLite it
 delegates to the existing in-process FAISS index.
 
-Both backends return (job_id, similarity) with similarity normalised to 0..1
+With VECTOR_BACKEND=redis (the Redis vector search experiment) a RediSearch
+HNSW index answers first; any Redis error or empty result falls through to
+the backends above.
+
+All backends return (job_id, similarity) with similarity normalised to 0..1
 (1.0 = identical), so callers need no backend-specific handling.
 """
 import logging
+import time
 
+from jobs.redis_vector_store import get_store
 from jobs.utils import get_embeddings, get_job_faiss_index
 from services.pgvector_support import is_postgres, to_vector_literal
+from services.vector_backend import is_redis_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +41,46 @@ def dense_search(query_text: str, k: int, query_vec: list | None = None) -> list
     """
     if k <= 0:
         return []
+    if is_redis_vectors():
+        started = time.perf_counter()
+        try:
+            hits = _dense_search_redis(query_text, k, query_vec)
+        except Exception as e:
+            logger.warning(
+                "Redis vector search failed (%s) — is the container up / did you "
+                "run make redis-rebuild? Falling back", e,
+            )
+        else:
+            if hits is None:
+                logger.warning(
+                    "Redis vector index is not fully built — run make redis-rebuild; falling back"
+                )
+            elif hits:
+                logger.info(
+                    "dense search via redis: %d hits in %.1f ms",
+                    len(hits), (time.perf_counter() - started) * 1000,
+                )
+                return hits
+            else:
+                logger.warning(
+                    "Redis vector index returned no results — run make redis-rebuild; falling back"
+                )
     if is_postgres():
         return _dense_search_pgvector(query_text, k, query_vec)
     return _dense_search_faiss(query_text, k)
+
+
+def _dense_search_redis(query_text: str, k: int, query_vec: list | None = None) -> list[tuple[int, float]] | None:
+    """KNN over the RediSearch index. Raises on any Redis error (caller falls back).
+
+    Returns None when the index isn't fully built, so a partial index never answers.
+    """
+    store = get_store()
+    if not store.is_built():
+        return None
+    if query_vec is None:
+        query_vec = _embed_query(query_text)
+    return store.search(query_vec, k)
 
 
 def _dense_search_pgvector(query_text: str, k: int, query_vec: list | None = None) -> list[tuple[int, float]]:
