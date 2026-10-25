@@ -111,8 +111,8 @@ def _dense_search_pgvector(query_text: str, k: int, query_vec: list | None = Non
         # / build_job_faiss_index() return None there post-migration), so
         # _dense_search_faiss() just returns [] here — this is effectively a
         # fallback to an empty dense result, which then makes the caller
-        # (find_matching_jobs) drop through to find_matching_jobs_old's
-        # brute-force path, not a real FAISS search.
+        # (find_matching_jobs) drop through to find_matching_jobs_from_db's
+        # stored-embedding search, not a real FAISS search.
         logger.error("pgvector job search failed, falling back to FAISS: %s", e)
         db.session.rollback()
         return _dense_search_faiss(query_text, k)
