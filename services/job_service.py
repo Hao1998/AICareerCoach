@@ -14,7 +14,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langsmith import traceable
 
-from jobs.utils import get_embeddings, get_bm25_index, tokenize_for_bm25
+from jobs.utils import get_bm25_index, tokenize_for_bm25
 from jobs import vector_store as _vector_store_module
 from jobs.vector_store import dense_search
 from jobs.fetcher import fetch_jobs_from_adzuna
@@ -55,57 +55,59 @@ def _reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
-def calculate_embedding_similarity(resume_embedding, job_embedding):
-    """Calculate cosine similarity between two embeddings"""
-    resume_embedding = np.array(resume_embedding)
-    job_embedding = np.array(job_embedding)
-    similarity = np.dot(resume_embedding, job_embedding) / (
-        np.linalg.norm(resume_embedding) * np.linalg.norm(job_embedding)
-    )
-    return float(similarity)
+def _rank_by_stored_embedding(query_vec, rows, top_k: int) -> list[tuple[int, float]]:
+    """Exact cosine ranking of (job_id, embedding) rows against query_vec.
+
+    Returns the top_k (job_id, similarity) pairs, best first, with similarity
+    clamped to 0..1 to match what dense_search() returns.
+    """
+    job_ids = [row[0] for row in rows]
+    matrix = np.asarray([row[1] for row in rows], dtype=np.float32)
+    query = np.asarray(query_vec, dtype=np.float32)
+
+    norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query)
+    norms[norms == 0] = 1.0
+    similarities = (matrix @ query) / norms
+
+    top = np.argsort(similarities)[::-1][:top_k]
+    return [(job_ids[i], max(0.0, min(1.0, float(similarities[i])))) for i in top]
 
 
-def find_matching_jobs_old(resume_text, top_k=5):
-    """[DEPRECATED] Brute-force method — kept as fallback for when FAISS index is unavailable"""
-    jobs = JobPosting.query.filter_by(is_active=True).all()
+def find_matching_jobs_from_db(resume_text, top_k=5):
+    """Fallback when dense search returns nothing (e.g. no FAISS index yet).
 
-    if not jobs:
+    Ranks every active job by cosine similarity against its stored
+    JobPosting.embedding — no job is re-embedded — then runs LLM analysis on
+    the top_k only. Jobs without a stored embedding are skipped; they are
+    embedded by compute_all_job_embeddings() on the next index build.
+    """
+    from flask import current_app
+    from models import db
+    app = current_app._get_current_object()
+
+    # A JSON column stores Python None as JSON 'null', which isnot(None) does
+    # not exclude — so drop empty embeddings here as well.
+    rows = [
+        row for row in (
+            db.session.query(JobPosting.id, JobPosting.embedding)
+            .filter(JobPosting.is_active == True, JobPosting.embedding.isnot(None))
+            .all()
+        )
+        if row[1]
+    ]
+    if not rows:
+        logger.warning("No stored job embeddings available for fallback search")
         return []
 
-    resume_embedding = _run_in_thread(get_embeddings().embed_query, resume_text)
+    query_vec = _run_in_thread(_vector_store_module._embed_query, resume_text)
+    ranked = _run_in_thread(_rank_by_stored_embedding, query_vec, rows, top_k)
 
-    matches = []
-    for job in jobs:
-        job_text = f"{job.title} {job.description} {job.requirements or ''}"
-        job_embedding = _run_in_thread(get_embeddings().embed_query, job_text)
-        similarity_score = calculate_embedding_similarity(resume_embedding, job_embedding)
-
-        try:
-            result = run_job_matching(
-                resume=resume_text[:3000],
-                job_title=job.title,
-                company=job.company,
-                job_description=job.description[:1000],
-                job_requirements=job.requirements[:1000] if job.requirements else "Not specified",
-            )
-            analysis = {
-                "match_score": result.match_score,
-                "matched_skills": result.matched_skills,
-                "skill_gaps": result.skill_gaps,
-                "recommendation": result.recommendation,
-            }
-        except Exception:
-            analysis = {
-                "match_score": int(similarity_score * 100),
-                "matched_skills": [],
-                "skill_gaps": [],
-                "recommendation": "Analysis not available"
-            }
-
-        matches.append({'job': job, 'similarity_score': similarity_score, 'analysis': analysis})
-
-    matches.sort(key=lambda x: x['similarity_score'], reverse=True)
-    return matches[:top_k]
+    jobs_by_id = {
+        j.id: j
+        for j in JobPosting.query.filter(JobPosting.id.in_([jid for jid, _ in ranked])).all()
+    }
+    candidates = [(jobs_by_id[jid], score) for jid, score in ranked if jid in jobs_by_id]
+    return _analyze_candidates(app, resume_text, candidates)
 
 
 def _analyze_job(app, resume_text: str, job: JobPosting, similarity_score: float) -> dict:
@@ -135,6 +137,37 @@ def _analyze_job(app, resume_text: str, job: JobPosting, similarity_score: float
                 "recommendation": "Analysis not available",
             }
     return {"job": job, "similarity_score": similarity_score, "analysis": analysis}
+
+
+def _analyze_candidates(app, resume_text: str, candidates: list[tuple[JobPosting, float]]) -> list[dict]:
+    """Run _analyze_job over (job, similarity) pairs in parallel, keeping input order."""
+    # Preserve ranking order even though futures complete out of order.
+    ordered_results = [None] * len(candidates)
+
+    with ThreadPoolExecutor(max_workers=_LLM_CONCURRENCY) as pool:
+        future_to_idx = {
+            pool.submit(_analyze_job, app, resume_text, job, score): idx
+            for idx, (job, score) in enumerate(candidates)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                ordered_results[idx] = future.result()
+            except Exception as e:
+                job, score = candidates[idx]
+                logger.error("Unexpected error analyzing job %s: %s", job.id, e)
+                ordered_results[idx] = {
+                    "job": job,
+                    "similarity_score": score,
+                    "analysis": {
+                        "match_score": score * 100,
+                        "matched_skills": [],
+                        "skill_gaps": [],
+                        "recommendation": "Analysis not available",
+                    },
+                }
+
+    return [r for r in ordered_results if r is not None]
 
 
 def _dense_search_faiss_threaded(app, resume_text: str, candidate_k: int):
@@ -198,8 +231,8 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             )
 
         if not dense_results:
-            logger.warning("No dense results available, falling back to brute-force")
-            return find_matching_jobs_old(resume_text, top_k)
+            logger.warning("No dense results available, falling back to stored-embedding search")
+            return find_matching_jobs_from_db(resume_text, top_k)
 
         dense_ranked = [job_id for job_id, _ in dense_results]
         # Similarity is already normalised 0..1 by the vector store.
@@ -240,37 +273,11 @@ def find_matching_jobs(resume_text, top_k=5, candidate_k=20):
             return []
 
         # --- Stage 2: parallel LLM analysis ---
-        # Preserve fused ranking order even though futures complete out of order.
-        ordered_results = [None] * len(active_candidates)
-
-        with ThreadPoolExecutor(max_workers=_LLM_CONCURRENCY) as pool:
-            future_to_idx = {
-                pool.submit(_analyze_job, app, resume_text, job, score): idx
-                for idx, (job, score) in enumerate(active_candidates)
-            }
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                try:
-                    ordered_results[idx] = future.result()
-                except Exception as e:
-                    job, score = active_candidates[idx]
-                    logger.error("Unexpected error analyzing job %s: %s", job.id, e)
-                    ordered_results[idx] = {
-                        "job": job,
-                        "similarity_score": score,
-                        "analysis": {
-                            "match_score": score * 100,
-                            "matched_skills": [],
-                            "skill_gaps": [],
-                            "recommendation": "Analysis not available",
-                        },
-                    }
-
-        return [r for r in ordered_results if r is not None]
+        return _analyze_candidates(app, resume_text, active_candidates)
 
     except Exception as e:
-        logger.error("Error in hybrid job matching: %s, falling back to brute-force", e)
-        return find_matching_jobs_old(resume_text, top_k)
+        logger.error("Error in hybrid job matching: %s, falling back to stored-embedding search", e)
+        return find_matching_jobs_from_db(resume_text, top_k)
 
 
 def fetch_and_save_jobs(user_id: int, keywords, location, max_jobs: int,

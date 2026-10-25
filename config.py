@@ -25,6 +25,12 @@ class Config:
     }
     REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
+    # Redis vector search experiment (opt-in). Code paths read these through
+    # services/vector_backend.py and services/redis_client.py, which use
+    # os.environ directly so they work without an app context.
+    VECTOR_BACKEND = os.environ.get('VECTOR_BACKEND', '')
+    REDIS_VECTOR_URL = os.environ.get('REDIS_VECTOR_URL', 'redis://localhost:6380/0')
+
     # Celery — decouples the Job Scout from the web process. When USE_CELERY is
     # true the scheduled scout runs via Celery Beat (run a worker + beat process)
     # instead of in-process APScheduler. Defaults off so dev works with no broker.
